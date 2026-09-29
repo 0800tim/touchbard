@@ -839,9 +839,12 @@ class Agent:
         if layout != self.layout_msg:
             self.layout_msg = layout
             self.send(layout)
-            if hasattr(self, "weather_where"):
-                self.weather_where = None
-                self.weather_tick()
+        # Any config save may have changed [weather] (location, units).
+        wcfg = json.dumps(cfg.get("weather", {}), sort_keys=True)
+        if hasattr(self, "weather_where") and wcfg != getattr(self, "weather_cfg", None):
+            self.weather_cfg = wcfg
+            self.weather_where = None
+            self.weather_tick()
 
     def watch_files(self):
         self.reload()
