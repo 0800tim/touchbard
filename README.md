@@ -53,6 +53,16 @@ On Arch: `pacman -S --needed rust cairo pango libinput python-gobject brightness
 
 ## Install
 
+**Omarchy:** install it as a plugin, then click the Touch Bar icon it adds to your bar to build and install:
+
+```bash
+omarchy plugin add https://github.com/0800tim/touchbard --enable
+```
+
+The installer runs in a terminal so you see each step. It installs missing packages from the official repos (`rust cairo pango libinput python-gobject brightnessctl cava tiny-dfr`), builds in `~/.cache/touchbard`, and asks for sudo to install the system service. After that, the bar icon opens your Touch Bar config (left-click), toggles the equaliser (right-click) and restarts the agent (middle-click). Remove it with `omarchy plugin remove io.github.0800tim.touchbard` plus the uninstall step below.
+
+**Manually:**
+
 ```bash
 git clone https://github.com/0800tim/touchbard && cd touchbard
 (cd daemon && cargo build --release)

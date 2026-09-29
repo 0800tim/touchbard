@@ -555,6 +555,15 @@ if __name__ == "__main__" and len(sys.argv) > 1:
             shutil.rmtree(user_dir / sys.argv[3])
         else:
             print("touchbar-agent plugin [list | add <git-url> | remove <name>]")
+    elif arg == "eq":
+        # touchbar-agent eq [on|off|toggle]: the equaliser behind the track title.
+        want = sys.argv[2] if len(sys.argv) > 2 else "toggle"
+        cur = load_prefs().get("eq", True)
+        on = {"on": True, "off": False}.get(want, not cur)
+        save_prefs({"eq": on})
+        subprocess.run(["systemctl", "--user", "kill", "--signal=USR1", "touchbar-agent.service"],
+                       stderr=subprocess.DEVNULL)
+        print(f"equaliser {'on' if on else 'off'}")
     elif arg == "--layer" and len(sys.argv) > 2:
         one_shot({"t": "layer", "name": sys.argv[2]})
     else:
@@ -829,6 +838,11 @@ class Agent:
 
     def on_usr1(self):
         self.reload(force=True)
+        # `touchbar-agent eq ...` changes the saved preference, then signals us.
+        eq = load_prefs().get("eq", True)
+        if eq != self.state.get("eq"):
+            self.push_state(eq=eq)
+            self.sync_plugins()
         return True
 
     def notify(self, title, body):

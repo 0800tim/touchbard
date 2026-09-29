@@ -1,0 +1,44 @@
+#!/bin/bash
+# Build and install touchbard from this folder (the Omarchy plugin checkout).
+# Runs in a terminal so you see every step, including the sudo password prompt.
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+
+echo "touchbard: themed Touch Bar for Apple Touch Bar MacBooks"
+echo
+
+if ! ls /sys/class/drm/*/modes >/dev/null 2>&1 || ! grep -qs "Touch Bar" /sys/class/input/*/name /proc/bus/input/devices; then
+  echo "No Touch Bar found on this machine. Nothing to do."
+  read -rp "Press Enter to close."
+  exit 1
+fi
+
+# Build dependencies and runtime tools, from the official repositories only.
+need=(rust cairo pango libinput python-gobject brightnessctl cava tiny-dfr)
+missing=()
+for p in "${need[@]}"; do pacman -Qq "$p" >/dev/null 2>&1 || missing+=("$p"); done
+if (( ${#missing[@]} )); then
+  echo "Installing: ${missing[*]}"
+  sudo pacman -S --needed "${missing[@]}"
+fi
+
+# Build outside the plugin folder: Omarchy reloads plugins when files under
+# ~/.config/omarchy/plugins change, and a Rust build writes thousands.
+export CARGO_TARGET_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/touchbard/target"
+(cd "$here/daemon" && cargo build --release)
+
+echo
+echo "Installing the system service (replaces tiny-dfr's daemon; rolls back if it fails):"
+sudo env TOUCHBARD_BIN="$CARGO_TARGET_DIR/release/touchbard" "$here/system/install.sh"
+
+install -Dm644 "$here/system/touchbar-agent.service" "$HOME/.config/systemd/user/touchbar-agent.service"
+systemctl --user daemon-reload
+systemctl --user enable --now touchbar-agent
+if command -v omarchy >/dev/null; then
+  omarchy hook install theme-set "$here/system/hooks/touchbar-reload" >/dev/null
+  omarchy hook install font-set "$here/system/hooks/touchbar-reload" >/dev/null
+fi
+
+echo
+echo "Done. Your Touch Bar config: ~/.config/touchbar/config.toml"
+read -rp "Press Enter to close."

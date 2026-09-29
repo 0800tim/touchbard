@@ -5,7 +5,7 @@ set -euo pipefail
 [[ $EUID -eq 0 ]] || { echo "Run with sudo" >&2; exit 1; }
 here="$(cd "$(dirname "$0")/.." && pwd)"
 
-install -Dm755 "$here/daemon/target/release/touchbard" /usr/local/bin/touchbard
+install -Dm755 "${TOUCHBARD_BIN:-$here/daemon/target/release/touchbard}" /usr/local/bin/touchbard
 install -Dm755 "$here/agent/touchbar-agent" /usr/local/bin/touchbar-agent
 install -Dm644 "$here/share/touchbar/config.toml" /usr/local/share/touchbar/config.toml
 install -Dm644 "$here/README.md" /usr/local/share/touchbar/README.md
