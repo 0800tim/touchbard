@@ -1,0 +1,13 @@
+#!/bin/bash
+# Open the Touch Bar config, or focus it if it's already open: one window, however often you click.
+file="$HOME/.config/touchbar/config.toml"
+editor=nvim
+[[ -f $HOME/.local/state/omarchy/defaults/editor ]] && read -r editor <"$HOME/.local/state/omarchy/defaults/editor"
+case "${editor##*/}" in
+nvim | vim | nano | micro | hx | helix)
+  exec omarchy-launch-or-focus-tui --app-id=touchbar-config "$editor" "$file"
+  ;;
+*)
+  exec omarchy-launch-editor "$file"
+  ;;
+esac

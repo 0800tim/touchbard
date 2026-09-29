@@ -56,7 +56,7 @@ BarWidget {
         root.bar.run("systemctl --user restart touchbar-agent")
         probe.running = true
       } else {
-        root.bar.run("omarchy-launch-editor \"$HOME/.config/touchbar/config.toml\"")
+        root.bar.run("bash '" + root.pluginDir + "system/open-config'")
       }
     }
   }
