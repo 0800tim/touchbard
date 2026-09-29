@@ -9,10 +9,10 @@ use std::f64::consts::PI;
 use std::fs;
 use std::time::Instant;
 
-const MARGIN_Y: f64 = 5.0;
+const MARGIN_Y: f64 = 3.0;
 const RADIUS: f64 = 9.0;
-const ICON_PX: f64 = 26.0;
-const LABEL_PX: f64 = 17.0;
+const ICON_PX: f64 = 40.0;
+const LABEL_PX: f64 = 26.0;
 
 #[derive(Clone, Copy)]
 pub struct Rgb(pub f64, pub f64, pub f64);
@@ -236,9 +236,13 @@ fn draw_item(m: &Model, p: &Painter, pal: &Palette, it: &Item, n: usize, x: f64,
             p.pill(x, w, with_press(fill.unwrap_or(pal.surface)));
             let icon = if muted { it.mute_icon.as_deref().or(level_icon(&it.icons, 0.0)) } else { level_icon(&it.icons, v) }
                 .or(it.icon.as_deref());
+            // Lift the icon clear of the level line along the bottom.
+            c.save().unwrap();
+            c.translate(0.0, -4.0);
             p.content(icon, None, x, w, if muted { pal.fg_dim } else { ink });
+            c.restore().unwrap();
             // A hairline level meter along the bottom of the pill.
-            let (bx, bw, by) = (x + 14.0, w - 28.0, m.h - MARGIN_Y - 7.0);
+            let (bx, bw, by) = (x + 16.0, w - 32.0, m.h - MARGIN_Y - 6.0);
             pal.surface_hi.set(c);
             rounded(c, bx, by, bw, 3.0, 1.5);
             c.fill().unwrap();
@@ -288,11 +292,11 @@ fn draw_item(m: &Model, p: &Painter, pal: &Palette, it: &Item, n: usize, x: f64,
                 Some(a) => format!("{title}  ·  {a}"),
                 None => title.to_string(),
             };
-            let nw = p.text_width(note, 20.0, false);
+            let nw = p.text_width(note, 30.0, false);
             let tw = p.text_width(&text, LABEL_PX, false).min(w - nw - 30.0);
             let start = x + (w - nw - 10.0 - tw) / 2.0;
             pal.accent.set(c);
-            p.text(note, 20.0, false, start + nw / 2.0, cy, None);
+            p.text(note, 30.0, false, start + nw / 2.0, cy, None);
             pal.fg.set(c);
             p.text(&text, LABEL_PX, false, start + nw + 10.0 + tw / 2.0, cy, Some(tw + 1.0));
         }
@@ -383,7 +387,7 @@ fn draw_slider(m: &Model, p: &Painter, pal: &Palette, s: &SliderOverlay, now: In
             Part::Value => {
                 let label = if muted { "muted".to_string() } else { format!("{:.0}%", v * 100.0) };
                 (if muted { pal.fg_dim } else { pal.fg }).set(c);
-                p.text(&label, 20.0, true, x + w / 2.0, m.h / 2.0, None);
+                p.text(&label, 28.0, true, x + w / 2.0, m.h / 2.0, None);
             }
         }
     }
@@ -447,7 +451,7 @@ fn draw_finger(m: &Model, p: &Painter, pal: &Palette, alpha: f64, now: Instant) 
 
     let cy = m.h / 2.0;
     let chevron_zone = 96.0;
-    let icon_cx = m.w - chevron_zone - 34.0 + shake;
+    let icon_cx = m.w - chevron_zone - 40.0 + shake;
 
     // Pulse: breathing rings behind the glyph while waiting.
     if state == FingerState::Scan {
@@ -455,17 +459,17 @@ fn draw_finger(m: &Model, p: &Painter, pal: &Palette, alpha: f64, now: Instant) 
             let phase = ((t * 0.9) + k as f64 * 0.5).fract();
             color.set_a(c, 0.35 * (1.0 - phase));
             c.set_line_width(2.0);
-            c.arc(icon_cx, cy, 14.0 + phase * 16.0, 0.0, 2.0 * PI);
+            c.arc(icon_cx, cy, 20.0 + phase * 12.0, 0.0, 2.0 * PI);
             c.stroke().unwrap();
         }
     }
     let breathe = if state == FingerState::Scan { 0.75 + 0.25 * (t * 3.2).sin().abs() } else { 1.0 };
     color.mix(pal.fg, 0.1).set_a(c, breathe);
-    p.text(icon, 32.0, false, icon_cx, cy, None);
+    p.text(icon, 46.0, false, icon_cx, cy, None);
 
     pal.fg.set(c);
     let tw = p.text_width(title, LABEL_PX, true);
-    p.text(title, LABEL_PX, true, icon_cx - 40.0 - tw / 2.0 + shake, cy, None);
+    p.text(title, LABEL_PX, true, icon_cx - 48.0 - tw / 2.0 + shake, cy, None);
 
     // Chevrons: a wave of brightness running towards the sensor.
     if matches!(state, FingerState::Scan) {
@@ -475,12 +479,12 @@ fn draw_finger(m: &Model, p: &Painter, pal: &Palette, alpha: f64, now: Instant) 
             let glow = (1.0 - (phase - 0.3).abs() * 2.2).clamp(0.15, 1.0);
             let nudge = (t * 2.0 * PI * 0.8).sin() * 2.0;
             color.set_a(c, glow);
-            chevron(c, base + i as f64 * 26.0 + nudge, cy, 9.0, 13.0);
+            chevron(c, base + i as f64 * 28.0 + nudge, cy, 11.0, 16.0);
         }
     } else {
         // Settled: one solid arrow so the eye still lands on the sensor.
         color.set_a(c, 0.8);
-        chevron(c, m.w - chevron_zone + 32.0, cy, 9.0, 13.0);
+        chevron(c, m.w - chevron_zone + 32.0, cy, 11.0, 16.0);
     }
 
     c.pop_group_to_source().unwrap();
