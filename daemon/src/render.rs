@@ -284,8 +284,9 @@ fn draw_item(m: &Model, p: &Painter, pal: &Palette, it: &Item, n: usize, x: f64,
         }
         Kind::Nowplaying => {
             let Some(title) = m.text("title") else { return };
+            let bg_mode = m.layout.settings.nowplaying.as_str();
             // The live spectrum runs behind the title, quietly.
-            if m.bars_live(now) {
+            if bg_mode == "bars" && m.bars_live(now) {
                 c.save().unwrap();
                 rounded(c, x, MARGIN_Y, w, m.h - 2.0 * MARGIN_Y, RADIUS);
                 c.clip();
@@ -312,11 +313,26 @@ fn draw_item(m: &Model, p: &Painter, pal: &Palette, it: &Item, n: usize, x: f64,
                 Some(a) => format!("{title}  ·  {a}"),
                 None => title.to_string(),
             };
-            let nw = p.text_width(note, 30.0, false);
+            // With artwork on, the cover takes the note's place beside the title.
+            let art = if bg_mode == "art" { m.art.as_ref() } else { None };
+            let side = m.h - 2.0 * MARGIN_Y - 6.0;
+            let nw = if art.is_some() { side } else { p.text_width(note, 30.0, false) };
             let tw = p.text_width(&text, LABEL_PX, false).min(w - nw - 30.0);
             let start = x + (w - nw - 10.0 - tw) / 2.0;
-            pal.accent.set(c);
-            p.text(note, 30.0, false, start + nw / 2.0, cy, None);
+            if let Some(img) = art {
+                c.save().unwrap();
+                rounded(c, start, MARGIN_Y + 3.0, side, side, 6.0);
+                c.clip();
+                let s = side / img.width().min(img.height()) as f64;
+                c.translate(start, MARGIN_Y + 3.0);
+                c.scale(s, s);
+                c.set_source_surface(img, 0.0, 0.0).unwrap();
+                c.paint().unwrap();
+                c.restore().unwrap();
+            } else {
+                pal.accent.set(c);
+                p.text(note, 30.0, false, start + nw / 2.0, cy, None);
+            }
             pal.fg.set(c);
             p.text(&text, LABEL_PX, false, start + nw + 10.0 + tw / 2.0, cy, Some(tw + 1.0));
         }

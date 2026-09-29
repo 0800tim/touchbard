@@ -6,7 +6,7 @@ BARS = 96
 CONFIG = f"""
 [general]
 bars = {BARS}
-framerate = 30
+framerate = 24
 autosens = 1
 lower_cutoff_freq = 40
 higher_cutoff_freq = 12000

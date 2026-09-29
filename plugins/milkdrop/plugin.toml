@@ -1,4 +1,0 @@
-name = "milkdrop"
-description = "Milkdrop visuals (libprojectM 4) rendered on the GPU; 'next' changes preset"
-exec = "plugin.py"
-requires = ["libprojectm", "pulse (parec)"]

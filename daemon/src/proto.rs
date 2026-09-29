@@ -130,6 +130,9 @@ pub struct Settings {
     /// What the expanded visualiser can show, in the order its mode button
     /// cycles: "bars" (built in) or plugin names.
     pub visualizers: Vec<String>,
+    /// Behind the now-playing title: "bars" (live equaliser), "art" (album
+    /// artwork beside the title) or "off".
+    pub nowplaying: String,
 }
 
 impl Default for Settings {
@@ -142,6 +145,7 @@ impl Default for Settings {
             fingerprint_width: 330.0,
             dim_while_scanning: true,
             visualizers: vec!["bars".into()],
+            nowplaying: "bars".into(),
         }
     }
 }

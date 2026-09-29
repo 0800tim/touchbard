@@ -493,6 +493,7 @@ fn preview(args: &[String]) -> Result<()> {
                 }
             }
             "style" => model.bar_style = v.parse()?,
+            "art" => model.art = Some(cairo::ImageSurface::create_from_png(&mut File::open(v)?)?),
             "bars" => {
                 // A made-up spectrum: bass-heavy with some sparkle.
                 let n: usize = v.parse()?;

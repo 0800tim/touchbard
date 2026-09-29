@@ -519,7 +519,12 @@ impl Model {
                 (Part::Art, Some(54.0), 0.0),
                 (Part::Viz, None, 1.0),
                 (Part::Preset, Some(72.0), 0.0),
-                (Part::Mode, Some(72.0), 0.0),
+            ]);
+            // Only worth a mode button when there's more than one thing to show.
+            if self.visualizers().len() > 1 {
+                parts.push((Part::Mode, Some(72.0), 0.0));
+            }
+            parts.extend([
                 (Part::Prev, Some(80.0), 0.0),
                 (Part::Play, Some(80.0), 0.0),
                 (Part::Next, Some(80.0), 0.0),

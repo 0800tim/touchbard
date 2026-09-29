@@ -181,12 +181,19 @@ def build_layout(cfg):
     if not layers:
         raise ValueError("config has no [layers.<name>] with items")
     s = cfg.get("settings", {})
+    if s.get("nowplaying") == "off":
+        # No equaliser to expand into, so tapping the title plays/pauses.
+        for items in layers.values():
+            for it in items:
+                if it.get("kind") == "nowplaying" and it.get("act") == "visualizer":
+                    it["act"] = {"key": ["PlayPause"]}
     default = s.get("default_layer", "control")
     if default not in layers:
         default = next(iter(layers))
     fn_layer = s.get("fn_key_layer", "function")
     settings = {k: s[k] for k in ("dim_after", "off_after", "max_brightness", "slider_timeout",
-                                  "fingerprint_width", "dim_while_scanning", "visualizers") if k in s}
+                                  "fingerprint_width", "dim_while_scanning", "visualizers", "nowplaying")
+                if k in s}
     return {"t": "layout", "layers": layers, "default": default,
             "fn_layer": fn_layer if fn_layer in layers else None, "settings": settings}
 
@@ -333,7 +340,7 @@ class Plugin:
             if t == "frame":
                 self.pending = msg
             elif t == "bars":
-                self.agent.send({"t": "bars", "v": msg.get("v", [])})
+                self.agent.send({"t": "bars", "v": msg.get("v", [])}, droppable=True)
             elif t == "state":
                 msg.pop("t")
                 self.agent.push_state(**msg)
@@ -484,10 +491,22 @@ class Agent:
         self.connect()
         return True
 
-    def send(self, msg):
+    def send(self, msg, droppable=False):
         if not self.sock:
             return
         data = (json.dumps(msg, ensure_ascii=False) + "\n").encode()
+        if droppable:
+            # High-rate data (the spectrum): if the daemon is busy, skip a frame
+            # rather than stall or tear down the connection.
+            try:
+                self.sock.setblocking(False)
+                if self.sock.send(data) != len(data):
+                    self.disconnect()  # half a line would corrupt the stream
+            except BlockingIOError:
+                pass
+            except OSError:
+                self.disconnect()
+            return
         try:
             self.sock.setblocking(True)
             self.sock.settimeout(1.0)
@@ -576,7 +595,8 @@ class Agent:
                 want[pid] = spec
             # Background plugins (cava) run while music plays or a visualiser is up.
             for name, (_, meta) in available.items():
-                if meta.get("background") == "playing" and (self.state.get("playing") or self.surfaces):
+                spectrum = ((self.layout_msg or {}).get("settings", {}).get("nowplaying", "bars") != "off")
+                if meta.get("background") == "playing" and spectrum and self.state.get("playing"):
                     want.setdefault(name, None)
         for pid in list(self.plugins):
             if pid not in want or not self.plugins[pid].alive():
