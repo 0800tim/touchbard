@@ -1,0 +1,4 @@
+#!/bin/bash
+# Repaint the Touch Bar with the new theme/font straight away
+# (touchbar-agent also notices on its own within a couple of seconds).
+systemctl --user kill --signal=USR1 touchbar-agent.service 2>/dev/null || true

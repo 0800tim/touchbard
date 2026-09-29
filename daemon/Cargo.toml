@@ -1,0 +1,26 @@
+[package]
+name = "touchbard"
+version = "0.1.0"
+edition = "2021"
+description = "Themed Touch Bar daemon for Omarchy on Apple Silicon"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+cairo-rs = { version = "0.22", default-features = false, features = ["png"] }
+pango = "0.22"
+pangocairo = "0.22"
+drm = "0.14"
+input = "0.9"
+input-linux = { version = "0.7", features = ["serde"] }
+input-linux-sys = "0.9"
+libc = "0.2"
+nix = { version = "0.29", features = ["event", "signal", "user", "fs", "socket", "poll"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true

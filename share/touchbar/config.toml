@@ -1,0 +1,83 @@
+# Touch Bar layout — ~/.config/touchbar/config.toml
+#
+# Changes apply the moment you save. Colours follow your Omarchy theme.
+# A typo keeps the last good layout and shows a notification.
+#
+# ── Items ───────────────────────────────────────────────────────────────
+# Each layer is a list of items, left to right. An item is either a preset
+# name or a table.
+#
+# Presets:
+#   esc fn back           escape, the F-key switch, back to the main layer
+#   brightness keyboard volume
+#                         sliders: tap to open, or press and slide straight away
+#   mute mic              toggles that light up red when muted
+#   media nowplaying      ⏮ ⏯ ⏭ and the current track (tap it to play/pause)
+#   apps menu overview screenshot record lock nightlight emoji
+#   clock battery
+#   F1 … F12
+#   flex                  stretchy empty space
+#   gap  gap:40           fixed empty space (14 px, or the width you give)
+#
+# Tables — your own buttons:
+#   { icon = "󰈹", command = "omarchy launch browser" }
+#   { label = "Build", command = "cd ~/Projects/app && make", width = 120 }
+#   { icon = "󰆏", keys = ["LeftCtrl", "C"] }          # key chord
+#   { label = "Dev", layer = "dev" }                   # go to a layer
+#   { preset = "clock", format = "%H:%M:%S" }          # tweak a preset
+#
+#   icon      any Nerd Font glyph (https://www.nerdfonts.com/cheat-sheet)
+#   label     text, drawn next to the icon if there is one
+#   width     pixels (the bar is 2008 wide); leave it out to share leftover space
+#   style     normal | accent | subtle | plain | danger
+#   command   runs in your session, like a Hyprland binding
+#   keys      key names from https://docs.rs/input-linux/latest/input_linux/enum.Key.html
+#
+# Try:  touchbar-agent --dump-layout   to see the expanded result.
+
+[settings]
+default_layer = "control"
+fn_key_layer = "function"    # shown while you hold the fn key
+dim_after = 30               # seconds of no input before the bar dims
+off_after = 60               # ...and turns off (touch it to wake)
+max_brightness = 160         # 0–255; the bar follows your screen brightness up to this
+slider_timeout = 5           # seconds before an opened slider tucks itself away
+fingerprint_width = 330      # width of the Touch ID prompt at the right end
+dim_while_scanning = true    # fade the rest of the bar while Touch ID waits
+
+[theme]
+# Every colour comes from the current Omarchy theme. Override any role with
+# a hex colour or the name of a theme colour (red, magenta, accent, ...):
+# background = "#000000"     # true black, as on macOS
+# button     = "selection"
+# accent     = "magenta"
+# foreground = "#ffffff"
+
+[layers.control]
+items = [
+  "esc", "fn",
+  "gap",
+  "apps", "overview", "screenshot",
+  "nowplaying",
+  "media",
+  "gap",
+  "brightness", "keyboard",
+  "gap",
+  "volume", "mute",
+]
+
+[layers.function]
+items = [
+  "esc", "fn",
+  "F1", "F2", "F3", "F4", "F5", "F6",
+  "F7", "F8", "F9", "F10", "F11", "F12",
+]
+
+# Another layer, reachable with a button like { label = "Dev", layer = "dev" }:
+# [layers.dev]
+# items = [
+#   "esc", "back", "gap",
+#   { icon = "󰊢", label = "lazygit", command = "omarchy launch tui lazygit", width = 150 },
+#   { icon = "󰆍", label = "btop", command = "omarchy launch tui btop", width = 130 },
+#   "flex", "clock", "battery",
+# ]
