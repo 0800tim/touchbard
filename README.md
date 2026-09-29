@@ -6,7 +6,7 @@ A themed, macOS-style Touch Bar for Apple Touch Bar MacBooks running Linux. It h
 
 ## What you get
 
-- **Control strip:** esc · fn · apps · screenshot · equaliser toggle · now playing · ⏮ ⏯ ⏭ · screen brightness · keyboard light · volume · mute.
+- **Control strip:** esc · fn · apps · screenshot · weather · equaliser toggle · now playing · ⏮ ⏯ ⏭ · screen brightness · keyboard light · volume · mute.
 - **Real sliders** for brightness, keyboard backlight and volume. Tap one and it opens full width, or press and slide straight away as on a Mac. A hairline under each button shows the current level.
 
   ![Slider](docs/slider.png)
@@ -22,6 +22,10 @@ A themed, macOS-style Touch Bar for Apple Touch Bar MacBooks running Linux. It h
 - **Music:** a live equaliser ([cava](https://github.com/karlstav/cava)) or the album cover behind the track title, with a button to switch the equaliser off. Tap the title for a full-width equaliser with a drag-to-seek scrubber, via MPRIS, so it works with any player.
 
   ![Equaliser](docs/equaliser.png)
+
+- **Weather:** conditions icon (sun, moon, cloud, fog, drizzle, rain, sleet, snow, hail, thunderstorm, high wind), temperature, and a wind arrow with the speed in km/h, knots, mph or m/s. Tap it for feels-like, today's range and the next 12 hours. Data comes from [Open-Meteo](https://open-meteo.com) (no key needed). Units follow the location's country unless you set them.
+
+  ![Weather](docs/weather.png)
 
 - **Theme colours:** read from the current Omarchy theme, updated live when the theme changes. Elsewhere it uses a Tokyo Night palette, and you can override any colour.
 - **Workspaces strip, per-app layers** (switch layout by focused window) and a **clock and battery**, all optional.

@@ -193,7 +193,9 @@ pub fn draw(m: &Model, c: &Context, now: Instant) {
     pal.bg.set(c);
     c.paint().unwrap();
 
-    if let Some(v) = &m.viz {
+    if m.weather.is_some() {
+        draw_weather(m, &p, &pal, now);
+    } else if let Some(v) = &m.viz {
         draw_viz(m, &p, &pal, v, now);
     } else if let Some(s) = &m.slider {
         draw_slider(m, &p, &pal, s, now);
@@ -355,6 +357,44 @@ fn draw_item(m: &Model, p: &Painter, pal: &Palette, it: &Item, n: usize, x: f64,
                 }
                 (if is_active { pal.bg } else if windows > 0 { pal.fg } else { pal.fg_dim }).set(c);
                 p.text(&id.to_string(), LABEL_PX, true, sx + sw / 2.0, m.h / 2.0, None);
+            }
+        }
+        Kind::Weather => {
+            if let Some(f) = fill {
+                p.pill(x, w, with_press(f));
+            }
+            let (icon, temp) = match (m.text("weather_icon"), m.num("weather_temp")) {
+                (Some(i), Some(t)) => (i.to_string(), format!("{t:.0}°")),
+                _ => ("󰼯".to_string(), "--°".to_string()),
+            };
+            let tint = weather_tint(pal, m.text("weather_kind").unwrap_or(""));
+            let stale = m.flag("weather_stale");
+            // Wind: an arrow pointing where it blows, then the speed in the chosen unit.
+            let wind = m.num("weather_wind").map(|v| {
+                let unit = m.text("weather_wind_unit").unwrap_or("km/h");
+                (format!("{v:.0} {unit}"), m.num("weather_wind_dir"))
+            });
+            let iw = p.text_width(&icon, ICON_PX, false);
+            let tw = p.text_width(&temp, LABEL_PX, true);
+            let gap = 8.0;
+            let arrow = 22.0;
+            let ww = wind.as_ref().map_or(0.0, |(t, _)| 14.0 + arrow + 4.0 + p.text_width(t, 17.0, true));
+            let mut cx = x + (w - iw - gap - tw - ww) / 2.0;
+            let cy = m.h / 2.0;
+            (if stale { tint.mix(pal.fg_dim, 0.6) } else { tint }).set(c);
+            p.text(&icon, ICON_PX, false, cx + iw / 2.0, cy, None);
+            cx += iw + gap;
+            (if stale { pal.fg_dim } else { ink }).set(c);
+            p.text(&temp, LABEL_PX, true, cx + tw / 2.0, cy, None);
+            cx += tw + 14.0;
+            if let Some((speed, dir)) = wind {
+                let ink2 = if stale { pal.fg_dim } else { pal.fg.mix(pal.fg_dim, 0.25) };
+                if let Some(from) = dir {
+                    wind_arrow(c, cx + arrow / 2.0, cy, from, 1.0, ink2);
+                }
+                ink2.set(c);
+                let sw = p.text_width(&speed, 17.0, true);
+                p.text(&speed, 17.0, true, cx + arrow + 4.0 + sw / 2.0, cy, None);
             }
         }
         Kind::Plugin => {
@@ -739,6 +779,144 @@ fn draw_viz(m: &Model, p: &Painter, pal: &Palette, v: &VizOverlay, now: Instant)
                     pal.accent.set(c);
                     c.rectangle(x + 10.0, y + h - th - 3.0, (w - 20.0) * pos / len.max(1.0), th);
                     c.fill().unwrap();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Colour the sky: sun warm, moon in the second accent, rain and storms in
+/// the accent, the rest quiet.
+fn weather_tint(pal: &Palette, kind: &str) -> Rgb {
+    match kind {
+        "sun" => pal.yellow,
+        "moon" => pal.accent2,
+        "rain" | "storm" => pal.accent,
+        "snow" => pal.fg,
+        "wind" => pal.fg,
+        _ => pal.fg.mix(pal.fg_dim, 0.35),
+    }
+}
+
+/// Meteorological direction is where the wind comes FROM; point downwind.
+fn wind_arrow(c: &Context, x: f64, y: f64, from_deg: f64, scale: f64, ink: Rgb) {
+    c.save().unwrap();
+    c.translate(x, y);
+    c.rotate((from_deg + 180.0).to_radians());
+    c.scale(scale, scale);
+    ink.set(c);
+    c.move_to(0.0, -9.0);
+    c.line_to(6.0, 5.0);
+    c.line_to(0.0, 2.0);
+    c.line_to(-6.0, 5.0);
+    c.close_path();
+    c.fill().unwrap();
+    c.restore().unwrap();
+}
+
+fn draw_weather(m: &Model, p: &Painter, pal: &Palette, now: Instant) {
+    let c = p.c;
+    let items = m.items();
+    let cy = m.h / 2.0;
+    for (part, x, w) in m.overlay_parts() {
+        let pl = press_level(m, Hit::Overlay(part), now);
+        match part {
+            Part::Pinned(n) => draw_item(m, p, pal, &items[n], n, x, w, now),
+            Part::Close => {
+                p.pill(x, w, pal.surface.mix(pal.accent, 0.45 * pl));
+                p.content(Some("󰅖"), None, x, w, pal.fg);
+            }
+            Part::WNow => {
+                p.pill(x, w, pal.surface);
+                let Some(temp) = m.num("weather_temp") else {
+                    pal.fg_dim.set(c);
+                    p.text("Weather unavailable", LABEL_PX, true, x + w / 2.0, cy, None);
+                    continue;
+                };
+                let icon = m.text("weather_icon").unwrap_or("󰼯");
+                let tint = weather_tint(pal, m.text("weather_kind").unwrap_or(""));
+                let mut cx = x + 18.0;
+                tint.set(c);
+                let iw = p.text_width(icon, 44.0, false);
+                p.text(icon, 44.0, false, cx + iw / 2.0, cy, None);
+                cx += iw + 12.0;
+                let t = format!("{temp:.0}°");
+                let tw = p.text_width(&t, 34.0, true);
+                pal.fg.set(c);
+                p.text(&t, 34.0, true, cx + tw / 2.0, cy, None);
+                cx += tw + 16.0;
+                // Two lines: what it's doing, then feels-like and today's range.
+                let desc = m.text("weather_desc").unwrap_or("");
+                let mut detail = vec![];
+                if let Some(f) = m.num("weather_feels") {
+                    detail.push(format!("feels {f:.0}°"));
+                }
+                if let (Some(hi), Some(lo)) = (m.num("weather_hi"), m.num("weather_lo")) {
+                    detail.push(format!("↑{hi:.0}° ↓{lo:.0}°"));
+                }
+                let detail = detail.join("  ·  ");
+                let right_w = 150.0;
+                let col_w = (x + w - right_w - cx - 8.0).max(40.0);
+                pal.fg.set(c);
+                let dw = p.text_width(desc, 18.0, true).min(col_w);
+                p.text(desc, 18.0, true, cx + dw / 2.0, cy - 11.0, Some(col_w));
+                pal.fg_dim.mix(pal.fg, 0.35).set(c);
+                let lw = p.text_width(&detail, 15.0, true).min(col_w);
+                p.text(&detail, 15.0, true, cx + lw / 2.0, cy + 12.0, Some(col_w));
+                // Wind and place on the right.
+                let rx = x + w - right_w;
+                if let Some(speed) = m.num("weather_wind") {
+                    let unit = m.text("weather_wind_unit").unwrap_or("km/h");
+                    let s = format!("{speed:.0} {unit}");
+                    if let Some(dir) = m.num("weather_wind_dir") {
+                        wind_arrow(c, rx + 12.0, cy - 11.0, dir, 1.0, pal.fg);
+                    }
+                    pal.fg.set(c);
+                    let sw = p.text_width(&s, 17.0, true);
+                    p.text(&s, 17.0, true, rx + 28.0 + sw / 2.0, cy - 11.0, None);
+                }
+                if let Some(place) = m.text("weather_place") {
+                    pal.fg_dim.set(c);
+                    let pw = p.text_width(place, 14.0, false).min(right_w - 8.0);
+                    p.text(place, 14.0, false, rx + pw / 2.0, cy + 12.0, Some(right_w - 8.0));
+                }
+            }
+            Part::WHours => {
+                let hours: Vec<&serde_json::Value> = m
+                    .state
+                    .get("weather_hours")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.iter().collect())
+                    .unwrap_or_default();
+                if hours.is_empty() {
+                    continue;
+                }
+                let min_col = 96.0;
+                let n = ((w / min_col) as usize).clamp(1, hours.len());
+                let col = w / n as f64;
+                for (i, h) in hours.iter().take(n).enumerate() {
+                    let Some(h) = h.as_array() else { continue };
+                    let get_s = |k: usize| h.get(k).and_then(|v| v.as_str()).unwrap_or("");
+                    let (label, icon, kind) = (get_s(0), get_s(1), get_s(4));
+                    let temp = h.get(2).and_then(|v| v.as_f64());
+                    let pop = h.get(3).and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let cx = x + col * (i as f64 + 0.5);
+                    // Alternate faint panels so the hours read as columns.
+                    (if i % 2 == 0 { pal.surface } else { pal.surface.mix(pal.bg, 0.4) }).set(c);
+                    rounded(c, x + col * i as f64 + 2.0, MARGIN_Y, col - 4.0, m.h - 2.0 * MARGIN_Y, RADIUS);
+                    c.fill().unwrap();
+                    pal.fg_dim.mix(pal.fg, 0.3).set(c);
+                    let top = if pop >= 20.0 { format!("{label}  {pop:.0}%") } else { label.to_string() };
+                    p.text(&top, 14.0, true, cx, cy - 13.0, Some(col - 8.0));
+                    let t = temp.map(|t| format!("{t:.0}°")).unwrap_or_default();
+                    let iw = p.text_width(icon, 24.0, false);
+                    let tw = p.text_width(&t, 18.0, true);
+                    let sx = cx - (iw + 6.0 + tw) / 2.0;
+                    weather_tint(pal, kind).set(c);
+                    p.text(icon, 24.0, false, sx + iw / 2.0, cy + 10.0, None);
+                    pal.fg.set(c);
+                    p.text(&t, 18.0, true, sx + iw + 6.0 + tw / 2.0, cy + 10.0, None);
                 }
             }
             _ => {}

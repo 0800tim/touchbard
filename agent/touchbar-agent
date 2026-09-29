@@ -112,6 +112,7 @@ PRESETS = {
     "media": {"kind": "media", "w": 250},
     "nowplaying": {"kind": "nowplaying", "act": "visualizer"},
     "visualizer": btn("󰺢", w=84, act="visualizer"),
+    "weather": {"kind": "weather", "w": 240, "act": "weather"},
     "eq": btn("󰺢", w=72, style="plain", act={"toggle_flag": "eq"}, toggle="eq", style_on="subtle"),
     "workspaces": {"kind": "workspaces", "w": 300, "style": "plain",
                    "act": {"cmd": "hyprctl eval 'hl.dispatch(hl.dsp.focus({ workspace = \"{id}\" }))'"}},
@@ -370,6 +371,144 @@ class Plugin:
         GLib.timeout_add(800, reap)
 
 
+# ---------------------------------------------------------------------------
+# Weather (Open-Meteo, no key needed)
+# ---------------------------------------------------------------------------
+
+# WMO weather code -> (description, day icon, night icon, kind); icons are
+# Nerd Font Material Design glyphs, kind picks the colour.
+WMO = {
+    0: ("Clear", "\U000F0599", "\U000F0594", "sun"),
+    1: ("Mostly clear", "\U000F0595", "\U000F0F31", "sun"),
+    2: ("Partly cloudy", "\U000F0595", "\U000F0F31", "cloud"),
+    3: ("Overcast", "\U000F0590", "\U000F0590", "cloud"),
+    45: ("Fog", "\U000F0591", "\U000F0591", "cloud"),
+    48: ("Freezing fog", "\U000F0591", "\U000F0591", "cloud"),
+    51: ("Light drizzle", "\U000F0597", "\U000F0597", "rain"),
+    53: ("Drizzle", "\U000F0597", "\U000F0597", "rain"),
+    55: ("Heavy drizzle", "\U000F0597", "\U000F0597", "rain"),
+    56: ("Freezing drizzle", "\U000F067F", "\U000F067F", "snow"),
+    57: ("Freezing drizzle", "\U000F067F", "\U000F067F", "snow"),
+    61: ("Light rain", "\U000F0597", "\U000F0597", "rain"),
+    63: ("Rain", "\U000F0597", "\U000F0597", "rain"),
+    65: ("Heavy rain", "\U000F0596", "\U000F0596", "rain"),
+    66: ("Freezing rain", "\U000F067F", "\U000F067F", "snow"),
+    67: ("Freezing rain", "\U000F067F", "\U000F067F", "snow"),
+    71: ("Light snow", "\U000F0598", "\U000F0598", "snow"),
+    73: ("Snow", "\U000F0598", "\U000F0598", "snow"),
+    75: ("Heavy snow", "\U000F0F36", "\U000F0F36", "snow"),
+    77: ("Snow grains", "\U000F0598", "\U000F0598", "snow"),
+    80: ("Showers", "\U000F0597", "\U000F0597", "rain"),
+    81: ("Showers", "\U000F0597", "\U000F0597", "rain"),
+    82: ("Heavy showers", "\U000F0596", "\U000F0596", "rain"),
+    85: ("Snow showers", "\U000F0598", "\U000F0598", "snow"),
+    86: ("Heavy snow showers", "\U000F0F36", "\U000F0F36", "snow"),
+    95: ("Thunderstorm", "\U000F067E", "\U000F067E", "storm"),
+    96: ("Thunderstorm, hail", "\U000F0592", "\U000F0592", "storm"),
+    99: ("Thunderstorm, hail", "\U000F0592", "\U000F0592", "storm"),
+}
+WINDY_ICON = "\U000F059D"
+WIND_UNITS = {"kmh": ("kmh", "km/h", 1.0), "kn": ("kn", "kn", 1.852), "knots": ("kn", "kn", 1.852),
+              "mph": ("mph", "mph", 1.609), "ms": ("ms", "m/s", 3.6)}
+
+
+def weather_units(wcfg, country=None):
+    """(temperature_unit, wind key) from [weather] config, else by country.
+
+    Not the locale: plenty of systems outside the US run en_US."""
+    units = wcfg.get("units", "auto")
+    imperial = units == "imperial" or (units == "auto" and (country or "").upper() in ("US", "LR", "MM"))
+    temp = str(wcfg.get("temperature", "f" if imperial else "c")).lower()[:1]
+    wind = str(wcfg.get("wind", "mph" if imperial else "kmh")).lower().replace("/", "").replace(" ", "")
+    return ("fahrenheit" if temp == "f" else "celsius"), (wind if wind in WIND_UNITS else "kmh")
+
+
+def http_json(url, timeout=8):
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "touchbard (github.com/0800tim/touchbard)"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read(2 << 20))
+
+
+def weather_location(wcfg):
+    """(lat, lon, name, country): config, then Omarchy's weather location, then IP."""
+    from urllib.parse import quote
+    loc = str(wcfg.get("location", "")).strip()
+    name = None
+    if not loc:
+        try:
+            om = json.loads((Path.home() / ".local/state/omarchy/settings/weather.json").read_text())
+            if "latitude" in om and "longitude" in om:
+                return float(om["latitude"]), float(om["longitude"]), om.get("name"), None
+            loc = om.get("name", "")
+        except (OSError, ValueError):
+            pass
+    if loc:
+        m = re.match(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$", loc)
+        if m:
+            return float(m.group(1)), float(m.group(2)), None, None
+        res = http_json(f"https://geocoding-api.open-meteo.com/v1/search?name={quote(loc)}&count=1")
+        hit = (res.get("results") or [None])[0]
+        if hit:
+            return hit["latitude"], hit["longitude"], hit.get("name"), hit.get("country_code")
+    ip = http_json("https://ipapi.co/json/")
+    return float(ip["latitude"]), float(ip["longitude"]), ip.get("city") or name, ip.get("country_code")
+
+
+def fetch_weather(wcfg, where):
+    """Everything the widget and the expanded view need, as state keys."""
+    import datetime
+    lat, lon, place, country = where
+    temp_unit, wind_key = weather_units(wcfg, country)
+    api_wind, wind_label, to_kmh = WIND_UNITS[wind_key]
+    d = http_json(
+        "https://api.open-meteo.com/v1/forecast"
+        f"?latitude={lat:.4f}&longitude={lon:.4f}&timezone=auto&forecast_days=2"
+        "&current=temperature_2m,apparent_temperature,weather_code,is_day,wind_speed_10m,wind_direction_10m,wind_gusts_10m"
+        "&hourly=temperature_2m,weather_code,precipitation_probability,is_day"
+        "&daily=temperature_2m_max,temperature_2m_min"
+        f"&temperature_unit={temp_unit}&wind_speed_unit={api_wind}")
+    cur = d["current"]
+
+    def look(code, day):
+        desc, di, ni, kind = WMO.get(int(code), ("—", "\U000F0590", "\U000F0590", "cloud"))
+        if not day:
+            kind = "moon" if kind == "sun" else kind
+        return desc, (di if day else ni), kind
+
+    desc, icon, kind = look(cur["weather_code"], cur.get("is_day", 1))
+    wind = cur.get("wind_speed_10m")
+    gust = cur.get("wind_gusts_10m") or wind or 0
+    windy_above = float(wcfg.get("windy_above_kmh", 40))
+    if gust and gust * to_kmh >= windy_above:
+        icon, kind, desc = WINDY_ICON, "wind", f"Windy · {desc.lower()}"
+    # The next 12 hours, starting from the coming hour.
+    h = d["hourly"]
+    now = datetime.datetime.fromisoformat(cur["time"])
+    twelve = str(wcfg.get("clock", "12h")) != "24h"
+    hours = []
+    for i, t in enumerate(h["time"]):
+        ts = datetime.datetime.fromisoformat(t)
+        if ts <= now:
+            continue
+        _, hicon, hkind = look(h["weather_code"][i], h["is_day"][i])
+        label = ts.strftime("%-I%p").lower() if twelve else ts.strftime("%H:%M")
+        hours.append([label, hicon, h["temperature_2m"][i], h["precipitation_probability"][i] or 0, hkind])
+        if len(hours) == 12:
+            break
+    state = {
+        "weather_icon": icon, "weather_kind": kind, "weather_desc": desc,
+        "weather_temp": cur["temperature_2m"], "weather_feels": cur.get("apparent_temperature"),
+        "weather_hi": d["daily"]["temperature_2m_max"][0], "weather_lo": d["daily"]["temperature_2m_min"][0],
+        "weather_hours": hours, "weather_place": place or "", "weather_stale": False,
+    }
+    if wcfg.get("show_wind", True) and wind is not None:
+        state.update(weather_wind=wind, weather_wind_unit=wind_label, weather_wind_dir=cur.get("wind_direction_10m"))
+    else:
+        state.update(weather_wind=None)
+    return state
+
+
 PREFS = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "touchbar" / "prefs.json"
 
 
@@ -476,6 +615,9 @@ class Agent:
         self.start_hyprland_watch()
         self.poll_sysfs()
         GLib.timeout_add_seconds(3, self.media_tick)
+        self.weather_where, self.weather_ok_at = None, 0.0
+        self.weather_tick()
+        GLib.timeout_add_seconds(15 * 60, self.weather_tick)
 
     # ---- connection -------------------------------------------------------
 
@@ -677,6 +819,9 @@ class Agent:
         if layout != self.layout_msg:
             self.layout_msg = layout
             self.send(layout)
+            if hasattr(self, "weather_where"):
+                self.weather_where = None
+                self.weather_tick()
 
     def watch_files(self):
         self.reload()
@@ -929,6 +1074,32 @@ class Agent:
 
         import threading
         threading.Thread(target=load, daemon=True).start()
+
+    # ---- weather ----------------------------------------------------------
+
+    def weather_tick(self):
+        import threading
+        import time
+        try:
+            wcfg = load_config().get("weather", {})
+        except Exception:
+            wcfg = {}
+
+        def work():
+            try:
+                if self.weather_where is None or wcfg.get("location"):
+                    self.weather_where = weather_location(wcfg)
+                state = fetch_weather(wcfg, self.weather_where)
+                self.weather_ok_at = time.time()
+            except Exception as e:  # offline, rate limited, ...; keep the last reading
+                log(f"weather: {e}")
+                stale = time.time() - self.weather_ok_at > 3600
+                state = {"weather_stale": stale}
+                GLib.timeout_add_seconds(120, lambda: (self.weather_tick(), False)[1])
+            GLib.idle_add(lambda: (self.push_state(**state), False)[1])
+
+        threading.Thread(target=work, daemon=True).start()
+        return True
 
     # ---- Hyprland: workspaces and per-app layers ---------------------------
 

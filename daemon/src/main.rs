@@ -493,6 +493,14 @@ fn preview(args: &[String]) -> Result<()> {
                 }
             }
             "style" => model.bar_style = v.parse()?,
+            "state" => {
+                let vals: std::collections::HashMap<String, serde_json::Value> =
+                    serde_json::from_str(&fs::read_to_string(v)?)?;
+                model.update_state(vals);
+            }
+            "tapweather" => {
+                model.weather = Some(Instant::now());
+            }
             "art" => model.art = Some(cairo::ImageSurface::create_from_png(&mut File::open(v)?)?),
             "bars" => {
                 // A made-up spectrum: bass-heavy with some sparkle.

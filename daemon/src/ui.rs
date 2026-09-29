@@ -39,6 +39,9 @@ pub enum Part {
     Value,
     // visualiser
     Art,
+    // weather
+    WNow,
+    WHours,
     Viz,
     Preset,
     Mode,
@@ -101,6 +104,8 @@ pub struct Model {
     pub state: HashMap<String, Value>,
     pub slider: Option<SliderOverlay>,
     pub viz: Option<VizOverlay>,
+    /// The expanded weather view, with when it was last touched.
+    pub weather: Option<Instant>,
     pub finger: Finger,
     pub pressed: HashMap<Hit, (bool, Instant)>,
     pub bars: Vec<f32>,
@@ -128,6 +133,7 @@ impl Model {
             state: HashMap::new(),
             slider: None,
             viz: None,
+            weather: None,
             finger: Finger {
                 state: FingerState::Idle,
                 shown_state: FingerState::Scan,
@@ -156,6 +162,8 @@ impl Model {
         }
         self.layout = layout;
         self.slider = None;
+        self.weather = None;
+        self.weather = None;
         fx.extend(self.close_viz());
         fx
     }
@@ -440,6 +448,10 @@ impl Model {
                 changed = true;
             }
         }
+        if self.weather.is_some_and(|t| now - t > Duration::from_secs(10)) {
+            self.weather = None;
+            changed = true;
+        }
         let before = self.pressed.len();
         self.pressed.retain(|_, (down, t)| *down || now - *t < PRESS_FADE);
         changed |= before != self.pressed.len();
@@ -523,7 +535,13 @@ impl Model {
             .filter(|(_, i)| i.pin)
             .map(|(n, i)| (Part::Pinned(n), Some(i.w.unwrap_or(90.0)), 0.0))
             .collect();
-        if self.viz.is_some() {
+        if self.weather.is_some() {
+            parts.extend([
+                (Part::Close, Some(72.0), 0.0),
+                (Part::WNow, Some(560.0), 0.0),
+                (Part::WHours, None, 1.0),
+            ]);
+        } else if self.viz.is_some() {
             parts.extend([
                 (Part::Close, Some(72.0), 0.0),
                 (Part::Art, Some(54.0), 0.0),
@@ -557,7 +575,7 @@ impl Model {
     }
 
     fn overlay_open(&self) -> bool {
-        self.slider.is_some() || self.viz.is_some()
+        self.slider.is_some() || self.viz.is_some() || self.weather.is_some()
     }
 
     fn track_rect(&self) -> (f64, f64) {
@@ -650,6 +668,9 @@ impl Model {
         if let Some(s) = &mut self.slider {
             s.last_touch = now;
             s.close_at = None;
+        }
+        if let Some(t) = &mut self.weather {
+            *t = now;
         }
         // The fingerprint prompt covers the right end; touches there do nothing.
         if self.finger.state != FingerState::Idle
@@ -815,6 +836,7 @@ impl Model {
                     match hit {
                         Hit::Overlay(Part::Close) => {
                             self.slider = None;
+                            self.weather = None;
                             fx.extend(self.close_viz());
                         }
                         Hit::Overlay(Part::Preset) => match self.viz.as_ref().map(|v| v.mode.clone()) {
@@ -840,6 +862,11 @@ impl Model {
                             fx.extend(self.switch_layer(&target));
                         }
                         Some(Action::Visualizer) => fx.extend(self.open_viz()),
+                        Some(Action::Weather) => {
+                            self.slider = None;
+                            fx.extend(self.close_viz());
+                            self.weather = Some(now);
+                        }
                         Some(Action::ToggleFlag(k)) => {
                             let on = !self.flag(&k);
                             self.state.insert(k.clone(), Value::from(on));

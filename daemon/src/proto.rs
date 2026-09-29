@@ -54,6 +54,8 @@ pub enum Kind {
     Clock,
     Battery,
     Workspaces,
+    /// Current conditions and today's range, from the agent's weather state.
+    Weather,
     /// A surface drawn by a plugin process.
     Plugin,
     Gap,
@@ -84,6 +86,8 @@ pub enum Action {
     ToggleLayer(String),
     /// Expand the music visualiser over the bar.
     Visualizer,
+    /// Expand the weather: now, plus the next hours.
+    Weather,
     /// Flip a boolean state key (e.g. "eq") and tell the agent.
     ToggleFlag(String),
 }
