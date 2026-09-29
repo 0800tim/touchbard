@@ -132,7 +132,7 @@ The agent runs it and talks over stdin/stdout, one JSON object per line:
 - **In:** `{"t":"size","w","h","options"}`, `{"t":"theme",…}`, `{"t":"media","title","artist","position","length","playing",…}`, `{"t":"cmd","cmd":"tap"|"next","x"}`
 - **Out:** `{"t":"bars","v":[0..1,…]}`, `{"t":"state",…}`, `{"t":"log","msg"}`, or `{"t":"frame","w","h","len"}` followed by `len` bytes of BGRA to draw on a surface
 
-Put it on the bar with `{ plugin = "name", width = 400 }`. Install someone else's with `touchbar-agent plugin add <git-url>`, and list them with `touchbar-agent plugin list`. Keep frames small or infrequent: the socket carries every byte.
+Put it on the bar with `{ plugin = "name", width = 400 }`. Install someone else's with `touchbar-agent plugin add <git-url> <commit-sha>` (pinned to that exact commit, since plugins run as you), and list them with `touchbar-agent plugin list`. Keep frames small or infrequent: the socket carries every byte.
 
 ## Credits
 

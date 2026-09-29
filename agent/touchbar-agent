@@ -544,17 +544,21 @@ if __name__ == "__main__" and len(sys.argv) > 1:
         if sub == "list":
             for name, (folder, meta) in find_plugins().items():
                 print(f"{name:12} {meta.get('description', '')}\n{'':12} {folder}")
-        elif sub == "add" and len(sys.argv) > 3:
-            url = sys.argv[3]
+        elif sub == "add" and len(sys.argv) > 4:
+            # Plugins run as you, so they're pinned: an exact commit, checked out detached.
+            url, rev = sys.argv[3], sys.argv[4]
+            if not re.fullmatch(r"[0-9a-f]{40}", rev):
+                sys.exit("give the full 40-character commit to install, e.g. from the plugin's GitHub page")
             user_dir.mkdir(parents=True, exist_ok=True)
             dest = user_dir / Path(url.rstrip("/")).stem
-            subprocess.run(["git", "clone", "--depth", "1", url, str(dest)], check=True)
-            print(f"Installed {dest.name}. Use it with {{ plugin = \"{dest.name}\" }} in a layer.")
+            subprocess.run(["git", "clone", "--no-checkout", url, str(dest)], check=True)
+            subprocess.run(["git", "-C", str(dest), "checkout", "--detach", rev], check=True)
+            print(f"Installed {dest.name} at {rev[:12]}. Use it with {{ plugin = \"{dest.name}\" }} in a layer.")
         elif sub == "remove" and len(sys.argv) > 3:
             import shutil
             shutil.rmtree(user_dir / sys.argv[3])
         else:
-            print("touchbar-agent plugin [list | add <git-url> | remove <name>]")
+            print("touchbar-agent plugin [list | add <git-url> <commit-sha> | remove <name>]")
     elif arg == "eq":
         # touchbar-agent eq [on|off|toggle]: the equaliser behind the track title.
         want = sys.argv[2] if len(sys.argv) > 2 else "toggle"
