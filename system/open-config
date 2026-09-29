@@ -1,11 +1,29 @@
 #!/bin/bash
-# Open the Touch Bar config, or focus it if it's already open: one window, however often you click.
+# Open the Touch Bar config, or focus it if it's already open: one window,
+# however often (or however many times at once) this runs.
 file="$HOME/.config/touchbar/config.toml"
+lock="${XDG_RUNTIME_DIR:-/tmp}/touchbar-config.lock"
+exec 9>"$lock"
+flock -w 5 9 || exit 0
+
+window() { hyprctl -j clients | jq -r '.[] | select(.class == "touchbar-config") | .address' | head -n1; }
+
+if addr=$(window) && [[ -n $addr ]]; then
+  hyprctl dispatch "hl.dsp.focus({ window = \"address:$addr\" })" >/dev/null 2>&1 ||
+    hyprctl dispatch focuswindow "address:$addr" >/dev/null
+  exit 0
+fi
+
 editor=nvim
 [[ -f $HOME/.local/state/omarchy/defaults/editor ]] && read -r editor <"$HOME/.local/state/omarchy/defaults/editor"
 case "${editor##*/}" in
 nvim | vim | nano | micro | hx | helix)
-  exec omarchy-launch-or-focus-tui --app-id=touchbar-config "$editor" "$file"
+  setsid omarchy-launch-tui --app-id=touchbar-config "$editor" "$file" >/dev/null 2>&1 &
+  # Hold the lock until the window exists, so a second run focuses it instead.
+  for _ in $(seq 30); do
+    sleep 0.1
+    [[ -n $(window) ]] && break
+  done
   ;;
 *)
   exec omarchy-launch-editor "$file"

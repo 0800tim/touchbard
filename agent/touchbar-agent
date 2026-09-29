@@ -562,7 +562,14 @@ if __name__ == "__main__" and len(sys.argv) > 1:
     elif arg == "eq":
         # touchbar-agent eq [on|off|toggle]: the equaliser behind the track title.
         want = sys.argv[2] if len(sys.argv) > 2 else "toggle"
-        cur = load_prefs().get("eq", True)
+        import time
+        prefs = load_prefs()
+        # A click can arrive more than once (e.g. duplicated widgets); a second
+        # toggle within half a second would undo the first.
+        if want == "toggle" and time.time() - prefs.get("eq_at", 0) < 0.5:
+            sys.exit(0)
+        save_prefs({"eq_at": time.time()})
+        cur = prefs.get("eq", True)
         on = {"on": True, "off": False}.get(want, not cur)
         save_prefs({"eq": on})
         subprocess.run(["systemctl", "--user", "kill", "--signal=USR1", "touchbar-agent.service"],
