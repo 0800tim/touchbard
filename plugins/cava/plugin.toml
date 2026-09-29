@@ -1,0 +1,6 @@
+name = "cava"
+description = "Live audio spectrum from cava (PipeWire), drawn by the bar in theme colours"
+exec = "plugin.py"
+# Runs in the background whenever music plays, rather than filling a surface.
+background = "playing"
+requires = ["cava"]

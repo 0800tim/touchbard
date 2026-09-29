@@ -19,6 +19,8 @@ pub struct Theme {
     pub red: String,
     pub green: String,
     pub yellow: String,
+    /// Second colour for gradients (the theme's magenta).
+    pub accent2: String,
     pub font: String,
 }
 
@@ -35,6 +37,7 @@ impl Default for Theme {
             red: "#f7768e".into(),
             green: "#9ece6a".into(),
             yellow: "#e0af68".into(),
+            accent2: "#bb9af7".into(),
             font: "JetBrainsMono Nerd Font".into(),
         }
     }
@@ -50,6 +53,9 @@ pub enum Kind {
     Nowplaying,
     Clock,
     Battery,
+    Workspaces,
+    /// A surface drawn by a plugin process.
+    Plugin,
     Gap,
     Flex,
 }
@@ -76,6 +82,8 @@ pub enum Action {
     Layer(String),
     /// Switch to a layer, or back to the default one if it is already shown.
     ToggleLayer(String),
+    /// Expand the music visualiser over the bar.
+    Visualizer,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
@@ -105,6 +113,9 @@ pub struct Item {
     pub format: Option<String>,
     /// Stays visible when a slider is expanded over the layer.
     pub pin: bool,
+    /// Plugin: its name, and options passed through to it.
+    pub plugin: Option<String>,
+    pub options: Option<Value>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -116,6 +127,9 @@ pub struct Settings {
     pub slider_timeout: u64,
     pub fingerprint_width: f64,
     pub dim_while_scanning: bool,
+    /// What the expanded visualiser can show, in the order its mode button
+    /// cycles: "bars" (built in) or plugin names.
+    pub visualizers: Vec<String>,
 }
 
 impl Default for Settings {
@@ -127,6 +141,7 @@ impl Default for Settings {
             slider_timeout: 5,
             fingerprint_width: 330.0,
             dim_while_scanning: true,
+            visualizers: vec!["bars".into()],
         }
     }
 }
@@ -156,6 +171,21 @@ pub enum Incoming {
     Layer {
         name: String,
     },
+    /// Spectrum from cava, 0..1 per band, low to high.
+    Bars {
+        v: Vec<f32>,
+    },
+    /// Album art as base64 PNG; empty clears it.
+    Art {
+        png: String,
+    },
+    /// Header for a plugin frame: `len` bytes of BGRA follow the newline.
+    Pixels {
+        id: String,
+        w: u32,
+        h: u32,
+        len: usize,
+    },
 }
 
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -174,4 +204,19 @@ pub enum Outgoing {
     Hello,
     Run { cmd: String },
     Set { k: String, v: f64 },
+    /// The plugin surfaces now on screen; the agent runs exactly these.
+    Surfaces { list: Vec<SurfaceSpec> },
+    /// A tap or a command for a plugin (e.g. "next" for the next preset).
+    PluginCmd { id: String, cmd: String, x: f64 },
+    Seek { pos: f64 },
+    /// The bar went dark or came back; the agent pauses cava meanwhile.
+    Power { on: bool },
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct SurfaceSpec {
+    pub id: String,
+    pub w: u32,
+    pub h: u32,
+    pub options: Option<Value>,
 }

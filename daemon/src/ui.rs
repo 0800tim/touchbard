@@ -14,6 +14,11 @@ const STATE_HOLD: Duration = Duration::from_millis(700);
 pub const PRESS_FADE: Duration = Duration::from_millis(180);
 pub const FP_FADE_IN: Duration = Duration::from_millis(220);
 pub const FP_FADE_OUT: Duration = Duration::from_millis(280);
+/// Spectrum frames older than this count as silence.
+const BARS_STALE: Duration = Duration::from_millis(400);
+/// Plugin frames older than this are treated as gone.
+pub const PIXELS_STALE: Duration = Duration::from_millis(1500);
+pub const BAR_STYLES: u8 = 3;
 
 /// Something the daemon has to do in response to a touch.
 pub enum Effect {
@@ -22,31 +27,43 @@ pub enum Effect {
     Send(Outgoing),
 }
 
-/// Parts of the expanded slider, in drawing order.
+/// Parts of an expanded overlay (slider or visualiser), in drawing order.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Part {
     Pinned(usize),
     Close,
+    // slider
     Low,
     Track,
     High,
     Value,
+    // visualiser
+    Art,
+    Viz,
+    Preset,
+    Mode,
+    Prev,
+    Play,
+    Next,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Hit {
     Item(usize),
-    Media(usize, u8),
+    /// A segment inside an item: media prev/play/next, or a workspace.
+    Sub(usize, u8),
     Overlay(Part),
 }
 
 enum Grab {
     /// A button: keys held, or an action that fires on release.
-    Press { hit: Hit, keys: Vec<Key>, act: Option<Action>, inside: bool },
+    Press { hit: Hit, keys: Vec<Key>, act: Option<Action>, inside: bool, tap: Option<(String, f64)> },
     /// Dragging straight from a collapsed slider button, macOS style.
     SliderDrag { start_x: f64, start_v: f64, moved: bool },
     /// Dragging along the expanded slider's track.
     Track,
+    /// Touching the visualiser: a tap plays/pauses, a drag scrubs.
+    Scrub { start_x: f64, moved: bool },
     Ignore,
 }
 
@@ -55,6 +72,13 @@ pub struct SliderOverlay {
     pub key: String,
     pub last_touch: Instant,
     pub close_at: Option<Instant>,
+}
+
+pub struct VizOverlay {
+    /// "bars" or the name of the plugin filling the area.
+    pub mode: String,
+    /// While scrubbing: the position (seconds) under the finger.
+    pub scrub: Option<f64>,
 }
 
 pub struct Finger {
@@ -76,8 +100,16 @@ pub struct Model {
     pub fn_held: bool,
     pub state: HashMap<String, Value>,
     pub slider: Option<SliderOverlay>,
+    pub viz: Option<VizOverlay>,
     pub finger: Finger,
     pub pressed: HashMap<Hit, (bool, Instant)>,
+    pub bars: Vec<f32>,
+    pub peaks: Vec<f32>,
+    pub bars_at: Instant,
+    pub bar_style: u8,
+    pub art: Option<cairo::ImageSurface>,
+    pub surfaces: HashMap<String, (cairo::ImageSurface, Instant)>,
+    pub position_at: Instant,
     grabs: HashMap<u32, Grab>,
     hold: HashMap<String, Instant>,
 }
@@ -95,6 +127,7 @@ impl Model {
             fn_held: false,
             state: HashMap::new(),
             slider: None,
+            viz: None,
             finger: Finger {
                 state: FingerState::Idle,
                 shown_state: FingerState::Scan,
@@ -104,18 +137,26 @@ impl Model {
                 retry_at: None,
             },
             pressed: HashMap::new(),
+            bars: vec![],
+            peaks: vec![],
+            bars_at: now - BARS_STALE * 2,
+            bar_style: 0,
+            art: None,
+            surfaces: HashMap::new(),
+            position_at: now,
             grabs: HashMap::new(),
             hold: HashMap::new(),
         }
     }
 
     pub fn set_layout(&mut self, layout: Layout) -> Vec<Effect> {
-        let fx = self.release_all();
+        let mut fx = self.release_all();
         if !layout.layers.contains_key(&self.layer) {
             self.layer = layout.default.clone();
         }
         self.layout = layout;
         self.slider = None;
+        fx.extend(self.close_viz());
         fx
     }
 
@@ -143,11 +184,12 @@ impl Model {
     }
 
     pub fn switch_layer(&mut self, name: &str) -> Vec<Effect> {
-        let fx = self.release_all();
+        let mut fx = self.release_all();
         if self.layout.layers.contains_key(name) {
             self.layer = name.to_string();
         }
         self.slider = None;
+        fx.extend(self.close_viz());
         fx
     }
 
@@ -168,6 +210,9 @@ impl Model {
             // Don't let a slow echo from the agent yank the knob mid-drag.
             if self.hold.get(&k).is_some_and(|t| *t > now) {
                 continue;
+            }
+            if k == "position" {
+                self.position_at = now;
             }
             self.state.insert(k, v);
         }
@@ -194,6 +239,122 @@ impl Model {
         self.state.insert(key.to_string(), Value::from(v));
         self.hold.insert(key.to_string(), Instant::now() + STATE_HOLD);
         Effect::Send(Outgoing::Set { k: key.to_string(), v })
+    }
+
+    /// Track position and length in seconds, running on while playing.
+    pub fn position(&self, now: Instant) -> Option<(f64, f64)> {
+        let len = self.num("length").filter(|l| *l > 0.0)?;
+        let mut pos = self.num("position").unwrap_or(0.0);
+        if self.flag("playing") {
+            pos += (now - self.position_at).as_secs_f64();
+        }
+        Some((pos.clamp(0.0, len), len))
+    }
+
+    /// Hyprland workspaces to show: (id, window count), plus the active id.
+    pub fn workspaces(&self) -> (Vec<(i64, i64)>, i64) {
+        let active = self.num("workspace").map(|v| v as i64).unwrap_or(1);
+        let mut list: Vec<(i64, i64)> = self
+            .state
+            .get("workspaces")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|p| {
+                        let p = p.as_array()?;
+                        Some((p.first()?.as_i64()?, p.get(1).and_then(|w| w.as_i64()).unwrap_or(0)))
+                    })
+                    .filter(|(id, _)| *id > 0)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !list.iter().any(|(id, _)| *id == active) {
+            list.push((active, 0));
+        }
+        list.sort();
+        (list, active)
+    }
+
+    // ---- spectrum and frames -----------------------------------------------
+
+    pub fn set_bars(&mut self, v: Vec<f32>) {
+        let now = Instant::now();
+        let dt = (now - self.bars_at).as_secs_f32().min(0.5);
+        if self.peaks.len() != v.len() {
+            self.peaks = v.clone();
+        }
+        for (p, b) in self.peaks.iter_mut().zip(&v) {
+            // Peaks hang for a moment, then fall.
+            *p = (*p - 0.7 * dt).max(*b);
+        }
+        self.bars = v;
+        self.bars_at = now;
+    }
+
+    pub fn bars_live(&self, now: Instant) -> bool {
+        !self.bars.is_empty() && now - self.bars_at < BARS_STALE
+    }
+
+    pub fn surface(&self, id: &str, now: Instant) -> Option<&cairo::ImageSurface> {
+        self.surfaces.get(id).filter(|(_, t)| now - *t < PIXELS_STALE).map(|(s, _)| s)
+    }
+
+    /// The plugin surfaces currently on screen, with their sizes.
+    pub fn surface_specs(&self) -> Vec<SurfaceSpec> {
+        let h = self.h as u32;
+        if let Some(v) = &self.viz {
+            if v.mode == "bars" {
+                return vec![];
+            }
+            let (_, w) = self.viz_area();
+            return vec![SurfaceSpec { id: v.mode.clone(), w: w as u32, h, options: None }];
+        }
+        if self.slider.is_some() {
+            return vec![];
+        }
+        self.items()
+            .iter()
+            .zip(self.item_rects())
+            .filter(|(i, _)| i.kind == Kind::Plugin)
+            .filter_map(|(i, (_, w))| {
+                Some(SurfaceSpec { id: i.plugin.clone()?, w: w as u32, h, options: i.options.clone() })
+            })
+            .collect()
+    }
+
+    // ---- visualiser overlay ------------------------------------------------
+
+    pub fn viz_area(&self) -> (f64, f64) {
+        self.overlay_parts()
+            .into_iter()
+            .find(|(p, _, _)| *p == Part::Viz)
+            .map(|(_, x, w)| (x, w))
+            .unwrap_or((0.0, self.w))
+    }
+
+    fn visualizers(&self) -> Vec<String> {
+        let v = &self.layout.settings.visualizers;
+        if v.is_empty() { vec!["bars".into()] } else { v.clone() }
+    }
+
+    pub fn open_viz(&mut self) -> Vec<Effect> {
+        self.slider = None;
+        if self.viz.is_none() {
+            let list = self.visualizers();
+            // A music video playing? Start on the video plugin.
+            let mode = if self.flag("has_video") && list.iter().any(|m| m == "fmvideo") {
+                "fmvideo".to_string()
+            } else {
+                list[0].clone()
+            };
+            self.viz = Some(VizOverlay { mode, scrub: None });
+        }
+        vec![]
+    }
+
+    pub fn close_viz(&mut self) -> Vec<Effect> {
+        self.viz = None;
+        vec![]
     }
 
     // ---- fingerprint --------------------------------------------------------
@@ -282,6 +443,14 @@ impl Model {
         self.finger.state != FingerState::Idle
             || self.finger_alpha(now) > 0.0
             || self.pressed.values().any(|(down, _)| !*down)
+            || (self.bars_live(now) && self.shows_spectrum())
+            || (self.viz.is_some() && self.flag("playing"))
+            || self.surfaces.values().any(|(_, t)| now - *t < PIXELS_STALE)
+    }
+
+    /// Whether anything on screen draws the spectrum right now.
+    fn shows_spectrum(&self) -> bool {
+        self.viz.is_some() || (self.slider.is_none() && self.items().iter().any(|i| i.kind == Kind::Nowplaying))
     }
 
     /// When `tick` next has work to do, if ever.
@@ -344,20 +513,36 @@ impl Model {
             .filter(|(_, i)| i.pin)
             .map(|(n, i)| (Part::Pinned(n), Some(i.w.unwrap_or(90.0)), 0.0))
             .collect();
-        parts.extend([
-            (Part::Close, Some(72.0), 0.0),
-            (Part::Low, Some(64.0), 0.0),
-            (Part::Track, None, 1.0),
-            (Part::High, Some(64.0), 0.0),
-            (Part::Value, Some(96.0), 0.0),
-        ]);
-        // Leave room at the right for the fingerprint prompt's arrow target.
+        if self.viz.is_some() {
+            parts.extend([
+                (Part::Close, Some(72.0), 0.0),
+                (Part::Art, Some(54.0), 0.0),
+                (Part::Viz, None, 1.0),
+                (Part::Preset, Some(72.0), 0.0),
+                (Part::Mode, Some(72.0), 0.0),
+                (Part::Prev, Some(80.0), 0.0),
+                (Part::Play, Some(80.0), 0.0),
+                (Part::Next, Some(80.0), 0.0),
+            ]);
+        } else {
+            parts.extend([
+                (Part::Close, Some(72.0), 0.0),
+                (Part::Low, Some(64.0), 0.0),
+                (Part::Track, None, 1.0),
+                (Part::High, Some(64.0), 0.0),
+                (Part::Value, Some(96.0), 0.0),
+            ]);
+        }
         let widths: Vec<_> = parts.iter().map(|(_, w, f)| (*w, *f)).collect();
         self.lay_out(&widths)
             .into_iter()
             .zip(parts)
             .map(|((x, w), (p, _, _))| (p, x, w))
             .collect()
+    }
+
+    fn overlay_open(&self) -> bool {
+        self.slider.is_some() || self.viz.is_some()
     }
 
     fn track_rect(&self) -> (f64, f64) {
@@ -368,9 +553,20 @@ impl Model {
             .unwrap_or((0.0, self.w))
     }
 
+    /// Sub-segment rects for media (3 equal parts) and workspaces (one per id).
+    pub fn sub_rects(&self, item: &Item, x: f64, w: f64) -> Vec<(f64, f64)> {
+        let n = match item.kind {
+            Kind::Media => 3,
+            Kind::Workspaces => self.workspaces().0.len().max(1),
+            _ => 1,
+        };
+        let seg = w / n as f64;
+        (0..n).map(|i| (x + seg * i as f64, seg)).collect()
+    }
+
     pub fn hit(&self, x: f64) -> Option<Hit> {
         let half = SPACING / 2.0;
-        if self.slider.is_some() {
+        if self.overlay_open() {
             return self
                 .overlay_parts()
                 .into_iter()
@@ -388,9 +584,10 @@ impl Model {
             .find(|(_, (rx, rw))| x >= rx - half && x < rx + rw + half)?;
         match items[n].kind {
             Kind::Gap | Kind::Flex => None,
-            Kind::Media => {
-                let part = (((x - rx) / rw) * 3.0).clamp(0.0, 2.0) as u8;
-                Some(Hit::Media(n, part))
+            Kind::Media | Kind::Workspaces => {
+                let subs = self.sub_rects(&items[n], rx, rw);
+                let i = subs.iter().position(|(sx, sw)| x < sx + sw).unwrap_or(subs.len() - 1);
+                Some(Hit::Sub(n, i.min(255) as u8))
             }
             _ => Some(Hit::Item(n)),
         }
@@ -398,14 +595,18 @@ impl Model {
 
     fn hit_rect(&self, hit: Hit) -> Option<(f64, f64)> {
         match hit {
-            Hit::Item(n) | Hit::Media(n, _) => {
-                if self.slider.is_some() {
+            Hit::Item(n) | Hit::Sub(n, _) => {
+                if self.overlay_open() {
                     self.overlay_parts()
                         .into_iter()
                         .find(|(p, _, _)| *p == Part::Pinned(n))
                         .map(|(_, x, w)| (x, w))
                 } else {
-                    self.item_rects().get(n).copied()
+                    let (x, w) = *self.item_rects().get(n)?;
+                    match hit {
+                        Hit::Sub(_, i) => self.sub_rects(&self.items()[n], x, w).get(i as usize).copied(),
+                        _ => Some((x, w)),
+                    }
                 }
             }
             Hit::Overlay(p) => self
@@ -420,6 +621,12 @@ impl Model {
 
     fn press(&mut self, hit: Hit, down: bool) {
         self.pressed.insert(hit, (down, Instant::now()));
+    }
+
+    fn key_press(&mut self, hit: Hit, key: Key, fx: &mut Vec<Effect>) -> Grab {
+        self.press(hit, true);
+        fx.push(Effect::KeyDown(vec![key]));
+        Grab::Press { hit, keys: vec![key], act: None, inside: true, tap: None }
     }
 
     pub fn touch_down(&mut self, slot: u32, x: f64) -> Vec<Effect> {
@@ -455,22 +662,37 @@ impl Model {
                     let step = if p == Part::Low { -SLIDER_STEP } else { SLIDER_STEP };
                     fx.push(self.set_value(&key, cur + step));
                 }
-                Grab::Press { hit, keys: vec![], act: None, inside: true }
+                Grab::Press { hit, keys: vec![], act: None, inside: true, tap: None }
             }
-            Hit::Overlay(Part::Close) => {
+            Hit::Overlay(Part::Viz) => Grab::Scrub { start_x: x, moved: false },
+            Hit::Overlay(Part::Prev) => self.key_press(hit, Key::PreviousSong, &mut fx),
+            Hit::Overlay(Part::Play) => self.key_press(hit, Key::PlayPause, &mut fx),
+            Hit::Overlay(Part::Next) => self.key_press(hit, Key::NextSong, &mut fx),
+            Hit::Overlay(Part::Close | Part::Preset | Part::Mode) => {
                 self.press(hit, true);
-                Grab::Press { hit, keys: vec![], act: None, inside: true }
+                Grab::Press { hit, keys: vec![], act: None, inside: true, tap: None }
             }
             Hit::Overlay(_) => Grab::Ignore,
-            Hit::Media(_, part) => {
-                self.press(hit, true);
-                let key = [Key::PreviousSong, Key::PlayPause, Key::NextSong][part as usize];
-                fx.push(Effect::KeyDown(vec![key]));
-                Grab::Press { hit, keys: vec![key], act: None, inside: true }
+            Hit::Sub(n, part) => {
+                let item = self.items()[n].clone();
+                if item.kind == Kind::Media {
+                    let key = [Key::PreviousSong, Key::PlayPause, Key::NextSong][part.min(2) as usize];
+                    self.key_press(hit, key, &mut fx)
+                } else {
+                    // A workspace: fill `{id}` into the item's command.
+                    self.press(hit, true);
+                    let (list, _) = self.workspaces();
+                    let id = list.get(part as usize).map(|(id, _)| *id).unwrap_or(1);
+                    let act = match item.act {
+                        Some(Action::Cmd(c)) => Some(Action::Cmd(c.replace("{id}", &id.to_string()))),
+                        other => other,
+                    };
+                    Grab::Press { hit, keys: vec![], act, inside: true, tap: None }
+                }
             }
             Hit::Item(n) => {
                 let item = self.items()[n].clone();
-                if item.kind == Kind::Slider && self.slider.is_none() {
+                if item.kind == Kind::Slider && !self.overlay_open() {
                     let key = item.target.clone().unwrap_or_default();
                     let start_v = self.num(&key).unwrap_or(0.0);
                     self.slider = Some(SliderOverlay {
@@ -482,12 +704,20 @@ impl Model {
                     Grab::SliderDrag { start_x: x, start_v, moved: false }
                 } else {
                     self.press(hit, true);
+                    // A plugin with no action of its own gets the tap, in its own coordinates.
+                    let tap = match (&item.kind, &item.plugin, &item.act) {
+                        (Kind::Plugin, Some(id), None) => {
+                            let rx = self.item_rects().get(n).map(|r| r.0).unwrap_or(0.0);
+                            Some((id.clone(), x - rx))
+                        }
+                        _ => None,
+                    };
                     match item.act {
                         Some(Action::Key(keys)) => {
                             fx.push(Effect::KeyDown(keys.clone()));
-                            Grab::Press { hit, keys, act: None, inside: true }
+                            Grab::Press { hit, keys, act: None, inside: true, tap }
                         }
-                        act => Grab::Press { hit, keys: vec![], act, inside: true },
+                        act => Grab::Press { hit, keys: vec![], act, inside: true, tap },
                     }
                 }
             }
@@ -536,6 +766,18 @@ impl Model {
                     fx.push(self.set_value(&key, (x - tx) / tw));
                 }
             }
+            Grab::Scrub { start_x, moved } => {
+                if (x - *start_x).abs() > DRAG_THRESHOLD * 2.0 {
+                    *moved = true;
+                }
+                if *moved {
+                    let (vx, vw) = self.viz_area();
+                    let len = self.position(Instant::now()).map(|(_, l)| l);
+                    if let (Some(len), Some(v)) = (len, self.viz.as_mut()) {
+                        v.scrub = Some(((x - vx) / vw).clamp(0.0, 1.0) * len);
+                    }
+                }
+            }
             Grab::Ignore => {}
         }
         self.grabs.insert(slot, grab);
@@ -549,14 +791,31 @@ impl Model {
             s.last_touch = now;
         }
         match self.grabs.remove(&slot) {
-            Some(Grab::Press { hit, keys, act, inside }) => {
+            Some(Grab::Press { hit, keys, act, inside, tap }) => {
                 self.press(hit, false);
                 if !keys.is_empty() && inside {
                     fx.push(Effect::KeyUp(keys));
                 }
                 if inside {
-                    if hit == Hit::Overlay(Part::Close) {
-                        self.slider = None;
+                    match hit {
+                        Hit::Overlay(Part::Close) => {
+                            self.slider = None;
+                            fx.extend(self.close_viz());
+                        }
+                        Hit::Overlay(Part::Preset) => match self.viz.as_ref().map(|v| v.mode.clone()) {
+                            Some(m) if m != "bars" => {
+                                fx.push(Effect::Send(Outgoing::PluginCmd { id: m, cmd: "next".into(), x: 0.0 }))
+                            }
+                            _ => self.bar_style = (self.bar_style + 1) % BAR_STYLES,
+                        },
+                        Hit::Overlay(Part::Mode) => {
+                            let list = self.visualizers();
+                            if let Some(v) = &mut self.viz {
+                                let i = list.iter().position(|m| *m == v.mode).map_or(0, |i| (i + 1) % list.len());
+                                v.mode = list[i].clone();
+                            }
+                        }
+                        _ => {}
                     }
                     match act {
                         Some(Action::Cmd(cmd)) => fx.push(Effect::Send(Outgoing::Run { cmd })),
@@ -565,7 +824,11 @@ impl Model {
                             let target = if self.layer == l { self.layout.default.clone() } else { l };
                             fx.extend(self.switch_layer(&target));
                         }
+                        Some(Action::Visualizer) => fx.extend(self.open_viz()),
                         _ => {}
+                    }
+                    if let Some((id, x)) = tap {
+                        fx.push(Effect::Send(Outgoing::PluginCmd { id, cmd: "tap".into(), x }));
                     }
                 }
             }
@@ -573,6 +836,23 @@ impl Model {
                 // A quick drag from the button: tidy away shortly after.
                 if let Some(s) = &mut self.slider {
                     s.close_at = Some(now + Duration::from_millis(1200));
+                }
+            }
+            Some(Grab::Scrub { moved, .. }) => {
+                let target = self.viz.as_mut().and_then(|v| v.scrub.take());
+                match (moved, target) {
+                    (true, Some(pos)) => {
+                        self.state.insert("position".into(), Value::from(pos));
+                        self.position_at = now;
+                        self.hold.insert("position".into(), now + Duration::from_millis(1500));
+                        fx.push(Effect::Send(Outgoing::Seek { pos }));
+                    }
+                    (false, _) => {
+                        // A tap on the visualiser plays or pauses.
+                        fx.push(Effect::KeyDown(vec![Key::PlayPause]));
+                        fx.push(Effect::KeyUp(vec![Key::PlayPause]));
+                    }
+                    _ => {}
                 }
             }
             _ => {}

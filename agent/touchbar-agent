@@ -32,7 +32,10 @@ from pathlib import Path
 SOCKET = os.environ.get("TOUCHBARD_SOCKET", "/run/touchbard/touchbard.sock")
 CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "touchbar" / "config.toml"
 THEME = Path.home() / ".local/state/omarchy/current/theme/colors.toml"
-DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / "share/touchbar/config.toml"
+_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_CONFIG = _ROOT / "share/touchbar/config.toml"
+# Plugins: yours first, then the bundled ones (repo checkout or /usr/local/share).
+PLUGIN_DIRS = [CONFIG.parent / "plugins", _ROOT / "plugins", _ROOT / "share/touchbar/plugins"]
 if not DEFAULT_CONFIG.exists():
     DEFAULT_CONFIG = Path("/usr/local/share/touchbar/config.toml")
 
@@ -107,7 +110,10 @@ PRESETS = {
     "mute": key("Mute", icon=G["vol_mute"], w=84, toggle="muted", icon_on=G["vol_off"], style_on="danger"),
     "mic": key("MicMute", icon=G["mic"], w=84, toggle="mic_muted", icon_on=G["mic_off"], style_on="danger"),
     "media": {"kind": "media", "w": 250},
-    "nowplaying": {"kind": "nowplaying", "act": {"cmd": "omarchy-shell media playPause"}},
+    "nowplaying": {"kind": "nowplaying", "act": "visualizer"},
+    "visualizer": btn("󰺢", w=84, act="visualizer"),
+    "workspaces": {"kind": "workspaces", "w": 300, "style": "plain",
+                   "act": {"cmd": "hyprctl eval 'hl.dispatch(hl.dsp.focus({ workspace = \"{id}\" }))'"}},
     "clock": {"kind": "clock", "w": 190, "style": "plain", "format": "%a %-d %b  %H:%M"},
     "battery": {"kind": "battery", "w": 130, "style": "plain"},
     "apps": cmd(G["apps"], "omarchy-menu toggle apps"),
@@ -153,6 +159,8 @@ def expand_item(entry):
         e["act"] = {"toggle_layer": e.pop("toggle_layer")}
     if "width" in e:
         e["w"] = e.pop("width")
+    if "plugin" in e:
+        e.setdefault("kind", "plugin")
     base.update(e)
     base.setdefault("kind", "button")
     return base
@@ -178,7 +186,7 @@ def build_layout(cfg):
         default = next(iter(layers))
     fn_layer = s.get("fn_key_layer", "function")
     settings = {k: s[k] for k in ("dim_after", "off_after", "max_brightness", "slider_timeout",
-                                  "fingerprint_width", "dim_while_scanning") if k in s}
+                                  "fingerprint_width", "dim_while_scanning", "visualizers") if k in s}
     return {"t": "layout", "layers": layers, "default": default,
             "fn_layer": fn_layer if fn_layer in layers else None, "settings": settings}
 
@@ -213,6 +221,7 @@ def build_theme(cfg):
         "red": c("red", default="#f7768e"),
         "green": c("green", default="#9ece6a"),
         "yellow": c("yellow", default="#e0af68"),
+        "accent2": c("bright_magenta", "magenta", default="#bb9af7"),
         "font": "JetBrainsMono Nerd Font",
     }
     try:
@@ -235,6 +244,124 @@ def build_theme(cfg):
     return theme
 
 
+# ---------------------------------------------------------------------------
+# Plugins
+#
+# A plugin is a folder with plugin.toml (name, description, exec, optional
+# background = "playing") and an executable. It talks JSON lines:
+#   in  (stdin):  {"t":"size","w","h","options"} {"t":"theme",...} {"t":"media",...}
+#                 {"t":"cmd","cmd":"next"|"tap","x"}
+#   out (stdout): {"t":"frame","w","h","len"} + len bytes BGRA
+#                 {"t":"bars","v":[0..1,...]} {"t":"state",...} {"t":"log","msg"}
+# ---------------------------------------------------------------------------
+
+def find_plugins():
+    found = {}
+    for d in PLUGIN_DIRS:
+        if not d.is_dir():
+            continue
+        for manifest in sorted(d.glob("*/plugin.toml")):
+            try:
+                with open(manifest, "rb") as f:
+                    meta = tomllib.load(f)
+            except (OSError, tomllib.TOMLDecodeError):
+                continue
+            name = meta.get("name") or manifest.parent.name
+            found.setdefault(name, (manifest.parent, meta))
+    return found
+
+
+class Plugin:
+    def __init__(self, agent, name, folder, meta):
+        self.agent, self.name = agent, name
+        self.buf = bytearray()
+        self.pending = None
+        self.size = None
+        exe = folder / meta.get("exec", "plugin.py")
+        self.proc = subprocess.Popen([str(exe)], cwd=folder, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                     start_new_session=True)
+        fd = self.proc.stdout.fileno()
+        os.set_blocking(fd, False)
+        self.watch = GLib.io_add_watch(fd, GLib.PRIORITY_DEFAULT,
+                                       GLib.IOCondition.IN | GLib.IOCondition.HUP | GLib.IOCondition.ERR, self.on_out)
+        log(f"plugin {name} started")
+
+    def alive(self):
+        return self.proc.poll() is None
+
+    def send(self, msg):
+        try:
+            self.proc.stdin.write((json.dumps(msg, ensure_ascii=False) + "\n").encode())
+            self.proc.stdin.flush()
+        except (BrokenPipeError, ValueError, OSError):
+            pass
+
+    def on_out(self, fd, cond):
+        eof = False
+        while True:
+            try:
+                chunk = os.read(fd, 1 << 20)
+            except BlockingIOError:
+                break
+            except OSError:
+                chunk = b""
+            if not chunk:
+                eof = True
+                break
+            self.buf += chunk
+        frame = None
+        while True:
+            if self.pending:
+                n = self.pending["len"]
+                if len(self.buf) < n:
+                    break
+                # Keep only the newest frame from this batch.
+                frame = (self.pending, bytes(self.buf[:n]))
+                del self.buf[:n]
+                self.pending = None
+                continue
+            i = self.buf.find(b"\n")
+            if i < 0:
+                break
+            line = bytes(self.buf[:i])
+            del self.buf[:i + 1]
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                continue
+            t = msg.get("t")
+            if t == "frame":
+                self.pending = msg
+            elif t == "bars":
+                self.agent.send({"t": "bars", "v": msg.get("v", [])})
+            elif t == "state":
+                msg.pop("t")
+                self.agent.push_state(**msg)
+            elif t == "log":
+                log(f"[{self.name}] {msg.get('msg')}")
+        if frame:
+            hdr, data = frame
+            self.agent.send_frame(self.name, hdr["w"], hdr["h"], data)
+        if eof:
+            log(f"plugin {self.name} exited")
+            return False
+        return True
+
+    def stop(self):
+        GLib.source_remove(self.watch) if self.alive() else None
+        try:
+            self.proc.stdin.close()
+        except OSError:
+            pass
+        proc = self.proc
+
+        def reap():
+            if proc.poll() is None:
+                proc.terminate()
+            return False
+        GLib.timeout_add(800, reap)
+
+
 def one_shot(msg):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.connect(SOCKET)
@@ -248,6 +375,23 @@ if __name__ == "__main__" and len(sys.argv) > 1:
         print(json.dumps(build_layout(load_config()), indent=1, ensure_ascii=False))
     elif arg == "--dump-theme":
         print(json.dumps(build_theme(load_config()), indent=1))
+    elif arg == "plugin":
+        sub = sys.argv[2] if len(sys.argv) > 2 else "list"
+        user_dir = CONFIG.parent / "plugins"
+        if sub == "list":
+            for name, (folder, meta) in find_plugins().items():
+                print(f"{name:12} {meta.get('description', '')}\n{'':12} {folder}")
+        elif sub == "add" and len(sys.argv) > 3:
+            url = sys.argv[3]
+            user_dir.mkdir(parents=True, exist_ok=True)
+            dest = user_dir / Path(url.rstrip("/")).stem
+            subprocess.run(["git", "clone", "--depth", "1", url, str(dest)], check=True)
+            print(f"Installed {dest.name}. Use it with {{ plugin = \"{dest.name}\" }} in a layer.")
+        elif sub == "remove" and len(sys.argv) > 3:
+            import shutil
+            shutil.rmtree(user_dir / sys.argv[3])
+        else:
+            print("touchbar-agent plugin [list | add <git-url> | remove <name>]")
     elif arg == "--layer" and len(sys.argv) > 2:
         one_shot({"t": "layer", "name": sys.argv[2]})
     else:
@@ -283,6 +427,11 @@ class Agent:
         self.setter_busy = False
         self.set_timer = None
         self.vol_timer = None
+        self.plugins = {}
+        self.surfaces = {}
+        self.power_on = True
+        self.media = {}
+        self.art_url = None
 
         self.reload(force=True)
         self.connect()
@@ -299,7 +448,9 @@ class Agent:
         self.start_volume_watch()
         self.start_media_watch()
         self.start_finger_watch()
+        self.start_hyprland_watch()
         self.poll_sysfs()
+        GLib.timeout_add_seconds(3, self.media_tick)
 
     # ---- connection -------------------------------------------------------
 
@@ -390,6 +541,63 @@ class Agent:
             self.run(msg.get("cmd", ""))
         elif t == "set":
             self.queue_set(msg["k"], float(msg["v"]))
+        elif t == "surfaces":
+            self.surfaces = {s["id"]: s for s in msg.get("list", [])}
+            self.sync_plugins()
+        elif t == "plugin_cmd":
+            p = self.plugins.get(msg.get("id"))
+            if p:
+                p.send({"t": "cmd", "cmd": msg.get("cmd"), "x": msg.get("x", 0)})
+        elif t == "power":
+            self.power_on = bool(msg.get("on"))
+            self.sync_plugins()
+        elif t == "seek":
+            self.seek(float(msg.get("pos", 0)))
+
+    # ---- plugins ----------------------------------------------------------
+
+    def send_frame(self, pid, w, h, data):
+        if not self.sock:
+            return
+        header = (json.dumps({"t": "pixels", "id": pid, "w": w, "h": h, "len": len(data)}) + "\n").encode()
+        try:
+            self.sock.setblocking(True)
+            self.sock.settimeout(1.0)
+            self.sock.sendall(header + data)
+            self.sock.setblocking(False)
+        except OSError:
+            self.disconnect()
+
+    def sync_plugins(self):
+        available = find_plugins()
+        want = {}
+        if self.sock and self.power_on:
+            for pid, spec in self.surfaces.items():
+                want[pid] = spec
+            # Background plugins (cava) run while music plays or a visualiser is up.
+            for name, (_, meta) in available.items():
+                if meta.get("background") == "playing" and (self.state.get("playing") or self.surfaces):
+                    want.setdefault(name, None)
+        for pid in list(self.plugins):
+            if pid not in want or not self.plugins[pid].alive():
+                self.plugins.pop(pid).stop()
+        for pid, spec in want.items():
+            p = self.plugins.get(pid)
+            if p is None:
+                if pid not in available:
+                    continue
+                folder, meta = available[pid]
+                try:
+                    p = self.plugins[pid] = Plugin(self, pid, folder, meta)
+                except OSError as e:
+                    log(f"plugin {pid}: {e}")
+                    continue
+                if self.theme_msg:
+                    p.send(self.theme_msg)
+                p.send({"t": "media", **self.media})
+            if spec and p.size != (spec["w"], spec["h"], json.dumps(spec.get("options"))):
+                p.size = (spec["w"], spec["h"], json.dumps(spec.get("options")))
+                p.send({"t": "size", "w": spec["w"], "h": spec["h"], "options": spec.get("options")})
 
     # ---- config and theme -------------------------------------------------
 
@@ -419,6 +627,8 @@ class Agent:
         if theme != self.theme_msg:
             self.theme_msg = theme
             self.send(theme)
+            for p in getattr(self, "plugins", {}).values():
+                p.send(theme)
         if layout != self.layout_msg:
             self.layout_msg = layout
             self.send(layout)
@@ -524,6 +734,11 @@ class Agent:
 
     def read_volume(self):
         self.vol_timer = None
+        self.plugins = {}
+        self.surfaces = {}
+        self.power_on = True
+        self.media = {}
+        self.art_url = None
         changes = {}
         for target, vk, mk in (("@DEFAULT_AUDIO_SINK@", "volume", "muted"),
                                ("@DEFAULT_AUDIO_SOURCE@", None, "mic_muted")):
@@ -586,11 +801,146 @@ class Agent:
             artist = ", ".join(artist) if isinstance(artist, list) else str(artist)
             r = rank.get(status, 2)
             if title and (best is None or r < best[0]):
-                best = (r, status, title, artist)
+                best = (r, name, status, title, artist, meta, props.get("Position", 0))
         if best:
-            self.push_state(playing=best[1] == "Playing", title=best[2], artist=best[3])
+            _, name, status, title, artist, meta, pos_us = best
+            length = (meta.get("mpris:length") or 0) / 1e6
+            self.media = {"player": name, "title": title, "artist": artist, "playing": status == "Playing",
+                          "position": round(pos_us / 1e6, 2), "length": round(length, 2),
+                          "url": meta.get("xesam:url") or "", "art_url": meta.get("mpris:artUrl") or "",
+                          "trackid": meta.get("mpris:trackid") or ""}
+            self.push_state(playing=status == "Playing", title=title, artist=artist,
+                            position=self.media["position"], length=self.media["length"])
+            self.update_art(self.media["art_url"])
         else:
-            self.push_state(playing=False, title="", artist="")
+            self.media = {}
+            self.push_state(playing=False, title="", artist="", length=0)
+            self.update_art("")
+        for p in self.plugins.values():
+            p.send({"t": "media", **self.media})
+        self.sync_plugins()
+        return False
+
+    def media_tick(self):
+        # Players only signal changes, not progress; re-read to keep the time honest.
+        if self.state.get("playing"):
+            self.read_media()
+        return True
+
+    def seek(self, pos):
+        m = self.media
+        if not m.get("player"):
+            return
+        try:
+            if m.get("trackid"):
+                self.session.call_sync(m["player"], "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2.Player",
+                                       "SetPosition", GLib.Variant("(ox)", (m["trackid"], int(pos * 1e6))),
+                                       None, Gio.DBusCallFlags.NONE, 1000, None)
+            else:
+                delta = pos - float(m.get("position") or 0)
+                self.session.call_sync(m["player"], "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2.Player",
+                                       "Seek", GLib.Variant("(x)", (int(delta * 1e6),)),
+                                       None, Gio.DBusCallFlags.NONE, 1000, None)
+        except GLib.Error as e:
+            log(f"seek: {e.message}")
+        GLib.timeout_add(300, self.read_media)
+
+    def update_art(self, url):
+        if url == self.art_url:
+            return
+        self.art_url = url
+        if not url:
+            self.send({"t": "art", "png": ""})
+            return
+
+        def load():
+            import base64
+            import urllib.request
+            try:
+                if url.startswith("file://"):
+                    from urllib.parse import unquote
+                    data = open(unquote(url[7:]), "rb").read()
+                else:
+                    with urllib.request.urlopen(url, timeout=6) as r:
+                        data = r.read(8 << 20)
+                gi.require_version("GdkPixbuf", "2.0")
+                from gi.repository import GdkPixbuf
+                loader = GdkPixbuf.PixbufLoader()
+                loader.write(data)
+                loader.close()
+                pb = loader.get_pixbuf()
+                side = 108
+                scale = side / min(pb.get_width(), pb.get_height())
+                pb = pb.scale_simple(max(1, int(pb.get_width() * scale)), max(1, int(pb.get_height() * scale)),
+                                     GdkPixbuf.InterpType.BILINEAR)
+                ok, png = pb.save_to_bufferv("png", [], [])
+                b64 = base64.b64encode(png).decode() if ok else ""
+            except Exception as e:  # art is decoration; never let it take the agent down
+                log(f"art: {e}")
+                b64 = ""
+            if url == self.art_url:
+                GLib.idle_add(lambda: (self.send({"t": "art", "png": b64}), False)[1])
+
+        import threading
+        threading.Thread(target=load, daemon=True).start()
+
+    # ---- Hyprland: workspaces and per-app layers ---------------------------
+
+    def start_hyprland_watch(self):
+        sig = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
+        run_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+        if not sig:
+            return
+        path = f"{run_dir}/hypr/{sig}/.socket2.sock"
+        try:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.connect(path)
+            s.setblocking(False)
+        except OSError as e:
+            log(f"hyprland events: {e}")
+            GLib.timeout_add_seconds(5, lambda: (self.start_hyprland_watch(), False)[1])
+            return
+        self.hypr_sock, self.hypr_buf, self.hypr_timer, self.app_layer = s, b"", None, None
+        GLib.io_add_watch(s.fileno(), GLib.PRIORITY_DEFAULT, GLib.IOCondition.IN | GLib.IOCondition.HUP,
+                          self.on_hypr)
+        self.read_hyprland()
+
+    def on_hypr(self, fd, cond):
+        try:
+            chunk = self.hypr_sock.recv(65536)
+        except BlockingIOError:
+            return True
+        except OSError:
+            chunk = b""
+        if not chunk:
+            GLib.timeout_add_seconds(2, lambda: (self.start_hyprland_watch(), False)[1])
+            return False
+        if self.hypr_timer is None:
+            self.hypr_timer = GLib.timeout_add(60, self.read_hyprland)
+        return True
+
+    def read_hyprland(self):
+        self.hypr_timer = None
+        def j(what):
+            try:
+                return json.loads(subprocess.run(["hyprctl", "-j", what], capture_output=True, text=True,
+                                                 timeout=2).stdout or "null")
+            except (OSError, ValueError, subprocess.TimeoutExpired):
+                return None
+        ws, active, win = j("workspaces") or [], j("activeworkspace") or {}, j("activewindow") or {}
+        self.push_state(workspaces=[[w["id"], w.get("windows", 0)] for w in ws if w.get("id", 0) > 0],
+                        workspace=active.get("id", 1), app=win.get("class") or "")
+        # Per-app layers: [apps] "regex" = "layer" in the config.
+        try:
+            apps = load_config().get("apps", {})
+        except Exception:
+            apps = {}
+        cls = win.get("class") or ""
+        layer = next((l for pat, l in apps.items() if re.search(pat, cls, re.I)), None)
+        if layer != self.app_layer:
+            self.app_layer = layer
+            default = (self.layout_msg or {}).get("default", "control")
+            self.send({"t": "layer", "name": layer or default})
         return False
 
     # ---- Touch ID ---------------------------------------------------------

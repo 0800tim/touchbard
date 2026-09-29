@@ -53,6 +53,7 @@ pub struct Palette {
     pub red: Rgb,
     pub green: Rgb,
     pub yellow: Rgb,
+    pub accent2: Rgb,
 }
 
 impl Palette {
@@ -67,6 +68,7 @@ impl Palette {
             red: Rgb::parse(&t.red),
             green: Rgb::parse(&t.green),
             yellow: Rgb::parse(&t.yellow),
+            accent2: Rgb::parse(&t.accent2),
         }
     }
 
@@ -191,7 +193,9 @@ pub fn draw(m: &Model, c: &Context, now: Instant) {
     pal.bg.set(c);
     c.paint().unwrap();
 
-    if let Some(s) = &m.slider {
+    if let Some(v) = &m.viz {
+        draw_viz(m, &p, &pal, v, now);
+    } else if let Some(s) = &m.slider {
         draw_slider(m, &p, &pal, s, now);
     } else {
         let items = m.items();
@@ -259,7 +263,7 @@ fn draw_item(m: &Model, p: &Painter, pal: &Palette, it: &Item, n: usize, x: f64,
             let icons = ["󰒮", if playing { "󰏤" } else { "󰐊" }, "󰒭"];
             for (i, icon) in icons.iter().enumerate() {
                 let sx = x + seg * i as f64;
-                let pl = press_level(m, Hit::Media(n, i as u8), now);
+                let pl = press_level(m, Hit::Sub(n, i as u8), now);
                 if pl > 0.0 {
                     c.save().unwrap();
                     rounded(c, x, MARGIN_Y, w, m.h - 2.0 * MARGIN_Y, RADIUS);
@@ -280,6 +284,22 @@ fn draw_item(m: &Model, p: &Painter, pal: &Palette, it: &Item, n: usize, x: f64,
         }
         Kind::Nowplaying => {
             let Some(title) = m.text("title") else { return };
+            // The live spectrum runs behind the title, quietly.
+            if m.bars_live(now) {
+                c.save().unwrap();
+                rounded(c, x, MARGIN_Y, w, m.h - 2.0 * MARGIN_Y, RADIUS);
+                c.clip();
+                draw_bars(m, c, pal, x, MARGIN_Y, w, m.h - 2.0 * MARGIN_Y, 0, 0.38);
+                c.restore().unwrap();
+            }
+            if let Some((pos, len)) = m.position(now) {
+                pal.surface_hi.set_a(c, 0.8);
+                c.rectangle(x + 12.0, m.h - MARGIN_Y - 2.0, w - 24.0, 2.0);
+                c.fill().unwrap();
+                pal.accent.set(c);
+                c.rectangle(x + 12.0, m.h - MARGIN_Y - 2.0, (w - 24.0) * pos / len, 2.0);
+                c.fill().unwrap();
+            }
             if pressed > 0.0 {
                 pal.accent.set_a(c, 0.25 * pressed);
                 rounded(c, x, MARGIN_Y, w, m.h - 2.0 * MARGIN_Y, RADIUS);
@@ -299,6 +319,31 @@ fn draw_item(m: &Model, p: &Painter, pal: &Palette, it: &Item, n: usize, x: f64,
             p.text(note, 30.0, false, start + nw / 2.0, cy, None);
             pal.fg.set(c);
             p.text(&text, LABEL_PX, false, start + nw + 10.0 + tw / 2.0, cy, Some(tw + 1.0));
+        }
+        Kind::Workspaces => {
+            let (list, active) = m.workspaces();
+            if let Some(f) = fill {
+                p.pill(x, w, f);
+            }
+            for (i, (sx, sw)) in m.sub_rects(it, x, w).into_iter().enumerate() {
+                let Some(&(id, windows)) = list.get(i) else { break };
+                let pl = press_level(m, Hit::Sub(n, i as u8), now);
+                let is_active = id == active;
+                let (dw, dh) = ((sw - 10.0).min(52.0), m.h - 2.0 * MARGIN_Y - 12.0);
+                let dx = sx + (sw - dw) / 2.0;
+                let dot = if is_active { pal.accent } else { pal.surface_hi.mix(pal.accent, 0.5 * pl) };
+                if is_active || windows > 0 || pl > 0.0 {
+                    dot.set_a(c, if is_active { 1.0 } else { 0.55 });
+                    rounded(c, dx, MARGIN_Y + 6.0, dw, dh, 7.0);
+                    c.fill().unwrap();
+                }
+                (if is_active { pal.bg } else if windows > 0 { pal.fg } else { pal.fg_dim }).set(c);
+                p.text(&id.to_string(), LABEL_PX, true, sx + sw / 2.0, m.h / 2.0, None);
+            }
+        }
+        Kind::Plugin => {
+            let id = it.plugin.as_deref().unwrap_or("");
+            draw_surface(m, p, pal, id, x, w, now);
         }
         Kind::Clock => {
             if let Some(f) = fill {
@@ -389,6 +434,7 @@ fn draw_slider(m: &Model, p: &Painter, pal: &Palette, s: &SliderOverlay, now: In
                 (if muted { pal.fg_dim } else { pal.fg }).set(c);
                 p.text(&label, 28.0, true, x + w / 2.0, m.h / 2.0, None);
             }
+            _ => {}
         }
     }
 }
@@ -500,4 +546,186 @@ fn chevron(c: &Context, x: f64, cy: f64, w: f64, h: f64) {
     c.line_to(x + w, cy);
     c.line_to(x, cy + h);
     c.stroke().unwrap();
+}
+
+/// The spectrum. Styles: 0 mirrored about the middle, 1 rising from the
+/// floor with falling peak caps, 2 dots.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_bars(m: &Model, c: &Context, pal: &Palette, x: f64, y: f64, w: f64, h: f64, style: u8, alpha: f64) {
+    let src = &m.bars;
+    if src.is_empty() {
+        return;
+    }
+    // Fewer, fatter bars on narrow areas.
+    let n = ((w / 14.0) as usize).clamp(8, src.len());
+    let bw = w / n as f64;
+    let sample = |v: &[f32], i: usize| -> f64 {
+        let a = i * v.len() / n;
+        let b = (((i + 1) * v.len()) / n).max(a + 1).min(v.len());
+        v[a..b].iter().copied().fold(0.0f32, f32::max) as f64
+    };
+    for i in 0..n {
+        let v = sample(src, i).clamp(0.0, 1.0);
+        let t = i as f64 / (n - 1).max(1) as f64;
+        let col = pal.accent.mix(pal.accent2, t);
+        let bx = x + i as f64 * bw + bw * 0.18;
+        let bwid = bw * 0.64;
+        match style {
+            0 => {
+                let bh = (v * h).max(2.0);
+                col.set_a(c, alpha);
+                rounded(c, bx, y + (h - bh) / 2.0, bwid, bh, bwid / 2.0);
+                c.fill().unwrap();
+            }
+            1 => {
+                let bh = (v * (h - 4.0)).max(2.0);
+                col.set_a(c, alpha);
+                rounded(c, bx, y + h - bh, bwid, bh, 2.0);
+                c.fill().unwrap();
+                let pk = sample(&m.peaks, i).clamp(0.0, 1.0);
+                pal.fg.set_a(c, alpha * 0.9);
+                c.rectangle(bx, y + h - pk * (h - 4.0) - 3.0, bwid, 2.5);
+                c.fill().unwrap();
+            }
+            _ => {
+                let rows = 8;
+                let lit = (v * rows as f64).round() as usize;
+                let cell = h / rows as f64;
+                for r in 0..rows {
+                    let on = r < lit;
+                    col.mix(pal.bg, if on { 0.0 } else { 0.8 }).set_a(c, alpha * if on { 1.0 } else { 0.35 });
+                    c.arc(bx + bwid / 2.0, y + h - cell * (r as f64 + 0.5), (cell * 0.36).min(bwid / 2.0), 0.0, 2.0 * PI);
+                    c.fill().unwrap();
+                }
+            }
+        }
+    }
+}
+
+/// A plugin's latest frame, scaled into a rounded pill; a placeholder until one arrives.
+fn draw_surface(m: &Model, p: &Painter, pal: &Palette, id: &str, x: f64, w: f64, now: Instant) {
+    let c = p.c;
+    let (y, h) = (MARGIN_Y, m.h - 2.0 * MARGIN_Y);
+    c.save().unwrap();
+    rounded(c, x, y, w, h, RADIUS);
+    c.clip();
+    match m.surface(id, now) {
+        Some(surf) => {
+            let sx = w / surf.width() as f64;
+            let sy = m.h / surf.height() as f64;
+            c.translate(x, 0.0);
+            c.scale(sx, sy);
+            c.set_source_surface(surf, 0.0, 0.0).unwrap();
+            c.source().set_filter(cairo::Filter::Good);
+            c.paint().unwrap();
+        }
+        None => {
+            pal.surface.mix(pal.bg, 0.4).set(c);
+            c.paint().unwrap();
+            pal.fg_dim.set(c);
+            p.text(id, LABEL_PX * 0.8, false, x + w / 2.0, m.h / 2.0, Some(w - 12.0));
+        }
+    }
+    c.restore().unwrap();
+}
+
+fn fmt_time(s: f64) -> String {
+    let s = s.max(0.0) as u64;
+    format!("{}:{:02}", s / 60, s % 60)
+}
+
+fn draw_viz(m: &Model, p: &Painter, pal: &Palette, v: &VizOverlay, now: Instant) {
+    let c = p.c;
+    let items = m.items();
+    let playing = m.flag("playing");
+    for (part, x, w) in m.overlay_parts() {
+        let pl = press_level(m, Hit::Overlay(part), now);
+        let button = |icon: &str, ink: Rgb| {
+            p.pill(x, w, pal.surface.mix(pal.accent, 0.45 * pl));
+            p.content(Some(icon), None, x, w, ink);
+        };
+        match part {
+            Part::Pinned(n) => draw_item(m, p, pal, &items[n], n, x, w, now),
+            Part::Close => button("󰅖", pal.fg),
+            Part::Prev => button("󰒮", pal.fg),
+            Part::Play => button(if playing { "󰏤" } else { "󰐊" }, pal.accent),
+            Part::Next => button("󰒭", pal.fg),
+            Part::Preset => button("󰑓", pal.fg),
+            Part::Mode => {
+                let icon = match v.mode.as_str() {
+                    "bars" => "󰺢",
+                    "milkdrop" => "󰸉",
+                    "fmvideo" => "󰕧",
+                    _ => "󰐱",
+                };
+                button(icon, pal.accent2)
+            }
+            Part::Art => {
+                c.save().unwrap();
+                rounded(c, x, MARGIN_Y, w, m.h - 2.0 * MARGIN_Y, RADIUS);
+                c.clip();
+                match &m.art {
+                    Some(img) => {
+                        let s = (m.h - 2.0 * MARGIN_Y) / img.height() as f64;
+                        c.translate(x + (w - img.width() as f64 * s) / 2.0, MARGIN_Y);
+                        c.scale(s, s);
+                        c.set_source_surface(img, 0.0, 0.0).unwrap();
+                        c.paint().unwrap();
+                    }
+                    None => {
+                        pal.surface.set(c);
+                        c.paint().unwrap();
+                        pal.accent.set(c);
+                        p.text("󰝚", 30.0, false, x + w / 2.0, m.h / 2.0, None);
+                    }
+                }
+                c.restore().unwrap();
+            }
+            Part::Viz => {
+                let (y, h) = (MARGIN_Y, m.h - 2.0 * MARGIN_Y);
+                if v.mode == "bars" {
+                    pal.surface.mix(pal.bg, 0.5).set(c);
+                    rounded(c, x, y, w, h, RADIUS);
+                    c.fill().unwrap();
+                    draw_bars(m, c, pal, x + 8.0, y + 4.0, w - 16.0, h - 8.0, m.bar_style, 0.95);
+                } else {
+                    draw_surface(m, p, pal, &v.mode, x, w, now);
+                }
+                // Title and time sit over the picture on a soft scrim.
+                let title = m.text("title").unwrap_or("");
+                let label = match m.text("artist") {
+                    Some(a) if !title.is_empty() => format!("{title}  ·  {a}"),
+                    _ => title.to_string(),
+                };
+                let pos = m.position(now);
+                let shown = v.scrub.zip(pos.map(|(_, l)| l)).or(pos);
+                if !label.is_empty() {
+                    let tw = p.text_width(&label, 20.0, true).min(w * 0.6);
+                    pal.bg.set_a(c, 0.55);
+                    rounded(c, x + 8.0, y + 5.0, tw + 20.0, 28.0, 8.0);
+                    c.fill().unwrap();
+                    pal.fg.set(c);
+                    p.text(&label, 20.0, true, x + 18.0 + tw / 2.0, y + 19.0, Some(tw + 1.0));
+                }
+                if let Some((pos, len)) = shown {
+                    let t = format!("{} / {}", fmt_time(pos), fmt_time(len));
+                    let tw = p.text_width(&t, 18.0, true);
+                    pal.bg.set_a(c, 0.55);
+                    rounded(c, x + w - tw - 28.0, y + 5.0, tw + 20.0, 28.0, 8.0);
+                    c.fill().unwrap();
+                    (if v.scrub.is_some() { pal.accent } else { pal.fg }).set(c);
+                    p.text(&t, 18.0, true, x + w - 18.0 - tw / 2.0, y + 19.0, None);
+                    // Progress line along the bottom edge; thicker while scrubbing.
+                    let th = if v.scrub.is_some() { 5.0 } else { 3.0 };
+                    pal.bg.set_a(c, 0.6);
+                    c.rectangle(x + 10.0, y + h - th - 3.0, w - 20.0, th);
+                    c.fill().unwrap();
+                    pal.accent.set(c);
+                    c.rectangle(x + 10.0, y + h - th - 3.0, (w - 20.0) * pos / len.max(1.0), th);
+                    c.fill().unwrap();
+                }
+            }
+            _ => {}
+        }
+    }
 }

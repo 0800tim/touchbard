@@ -9,6 +9,15 @@ install -Dm755 "$here/daemon/target/release/touchbard" /usr/local/bin/touchbard
 install -Dm755 "$here/agent/touchbar-agent" /usr/local/bin/touchbar-agent
 install -Dm644 "$here/share/touchbar/config.toml" /usr/local/share/touchbar/config.toml
 install -Dm644 "$here/README.md" /usr/local/share/touchbar/README.md
+rm -rf /usr/local/share/touchbar/plugins
+mkdir -p /usr/local/share/touchbar/plugins
+for d in "$here"/plugins/*/; do
+  name=$(basename "$d")
+  install -d "/usr/local/share/touchbar/plugins/$name"
+  find "$d" -maxdepth 1 -type f \( -name '*.py' -o -name '*.toml' -o -name '*.c' -o -name '*.md' \) \
+    -exec install -m644 {} "/usr/local/share/touchbar/plugins/$name/" \;
+  chmod 755 /usr/local/share/touchbar/plugins/"$name"/*.py 2>/dev/null || true
+done
 install -Dm644 "$here/system/touchbard.service" /etc/systemd/system/touchbard.service
 install -Dm644 "$here/system/99-touchbard.rules" /etc/udev/rules.d/99-touchbard.rules
 

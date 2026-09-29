@@ -1,0 +1,4 @@
+name = "fmvideo"
+description = "The music video for what's playing (fm.video, YouTube, or found by search): a tiny live player over an ambient glow, or a scrolling filmstrip"
+exec = "plugin.py"
+requires = ["yt-dlp", "ffmpeg", "python-cairo"]

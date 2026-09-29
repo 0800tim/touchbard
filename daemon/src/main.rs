@@ -53,6 +53,25 @@ struct Client {
     stream: UnixStream,
     buf: Vec<u8>,
     is_agent: bool,
+    /// A frame header waiting for its payload: (plugin id, width, height, bytes).
+    pending: Option<(String, u32, u32, usize)>,
+}
+
+/// Turn a plugin's raw BGRA frame into a surface we can draw.
+fn frame_surface(w: u32, h: u32, data: Vec<u8>) -> Option<cairo::ImageSurface> {
+    if w == 0 || h == 0 || data.len() != (w * h * 4) as usize {
+        return None;
+    }
+    cairo::ImageSurface::create_for_data(data, cairo::Format::Rgb24, w as i32, h as i32, (w * 4) as i32).ok()
+}
+
+fn decode_art(b64: &str) -> Option<cairo::ImageSurface> {
+    use base64::Engine;
+    if b64.is_empty() {
+        return None;
+    }
+    let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+    cairo::ImageSurface::create_from_png(&mut std::io::Cursor::new(bytes)).ok()
 }
 
 fn main() {
@@ -140,6 +159,9 @@ fn run() -> Result<()> {
     let mut frame = cairo::ImageSurface::create(cairo::Format::ARgb32, w as i32, h as i32)?;
     let mut clients: Vec<Client> = vec![];
     let mut dirty = true;
+    // What we last told the agent: the plugin surfaces on screen, and whether the bar is lit.
+    let mut last_specs: Option<Vec<SurfaceSpec>> = None;
+    let mut was_off: Option<bool> = None;
     let mut last_activity = Instant::now();
     let mut lid_closed = false;
     let mut last_minute = chrono::Local::now().format("%H%M").to_string();
@@ -162,7 +184,8 @@ fn run() -> Result<()> {
 
         // Backlight: follow the main display, dim when idle, off when idle longer.
         let s = &model.layout.settings;
-        if model.finger.state != FingerState::Idle {
+        // Stay awake for a Touch ID prompt, and while the visualiser plays.
+        if model.finger.state != FingerState::Idle || (model.viz.is_some() && model.flag("playing")) {
             last_activity = now;
         }
         let idle = now - last_activity;
@@ -176,6 +199,15 @@ fn run() -> Result<()> {
             full
         };
         backlight.set(target);
+        if was_off != Some(backlight.is_off()) {
+            was_off = Some(backlight.is_off());
+            send_all(&mut clients, &Outgoing::Power { on: !backlight.is_off() });
+        }
+        let specs = if backlight.is_off() { vec![] } else { model.surface_specs() };
+        if last_specs.as_ref() != Some(&specs) {
+            send_all(&mut clients, &Outgoing::Surfaces { list: specs.clone() });
+            last_specs = Some(specs);
+        }
 
         if dirty || model.animating(now) {
             {
@@ -330,7 +362,7 @@ fn run() -> Result<()> {
                         hello.push(b'\n');
                         let mut stream = stream;
                         let _ = stream.write_all(&hello);
-                        clients.push(Client { stream, buf: vec![], is_agent: false });
+                        clients.push(Client { stream, buf: vec![], is_agent: false, pending: None });
                     }
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => break,
@@ -356,7 +388,21 @@ fn run() -> Result<()> {
                     }
                 }
             }
-            while let Some(pos) = clients[i].buf.iter().position(|b| *b == b'\n') {
+            loop {
+                // A frame's raw payload follows its header line.
+                if let Some((id, w, h, len)) = clients[i].pending.clone() {
+                    if clients[i].buf.len() < len {
+                        break;
+                    }
+                    let data: Vec<u8> = clients[i].buf.drain(..len).collect();
+                    clients[i].pending = None;
+                    if let Some(surf) = frame_surface(w, h, data) {
+                        model.surfaces.insert(id, (surf, Instant::now()));
+                        dirty = true;
+                    }
+                    continue;
+                }
+                let Some(pos) = clients[i].buf.iter().position(|b| *b == b'\n') else { break };
                 let line: Vec<u8> = clients[i].buf.drain(..=pos).collect();
                 match serde_json::from_slice::<Incoming>(&line) {
                     Ok(msg) => {
@@ -370,17 +416,22 @@ fn run() -> Result<()> {
                             }
                             Incoming::Layout(l) => {
                                 clients[i].is_agent = true;
+                                last_specs = None;
+                                was_off = None;
                                 effects.extend(model.set_layout(l));
                             }
                             Incoming::State { values } => model.update_state(values),
                             Incoming::Fingerprint { s } => model.set_finger(s),
                             Incoming::Layer { name } => effects.extend(model.switch_layer(&name)),
+                            Incoming::Bars { v } => model.set_bars(v),
+                            Incoming::Art { png } => model.art = decode_art(&png),
+                            Incoming::Pixels { id, w, h, len } => clients[i].pending = Some((id, w, h, len)),
                         }
                     }
                     Err(e) => eprintln!("bad message: {e}"),
                 }
             }
-            if closed || clients[i].buf.len() > 1 << 20 {
+            if closed || clients[i].buf.len() > 32 << 20 {
                 agent_gone |= clients[i].is_agent;
                 clients.remove(i);
             } else {
@@ -435,6 +486,24 @@ fn preview(args: &[String]) -> Result<()> {
             }
             "finger" => model.set_finger(serde_json::from_value(serde_json::Value::from(v))?),
             "age" => age = v.parse()?,
+            "viz" => {
+                model.open_viz();
+                if let Some(z) = &mut model.viz {
+                    z.mode = v.to_string();
+                }
+            }
+            "style" => model.bar_style = v.parse()?,
+            "bars" => {
+                // A made-up spectrum: bass-heavy with some sparkle.
+                let n: usize = v.parse()?;
+                let bars = (0..n)
+                    .map(|i| {
+                        let t = i as f32 / n as f32;
+                        ((1.0 - t).powf(1.4) * 0.8 + 0.25 * ((t * 23.0).sin() * 0.5 + 0.5)).min(1.0)
+                    })
+                    .collect();
+                model.set_bars(bars);
+            }
             "tap" => {
                 let x: f64 = v.parse()?;
                 model.touch_down(0, x);

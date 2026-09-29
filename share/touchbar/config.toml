@@ -12,7 +12,10 @@
 #   brightness keyboard volume
 #                         sliders: tap to open, or press and slide straight away
 #   mute mic              toggles that light up red when muted
-#   media nowplaying      ⏮ ⏯ ⏭ and the current track (tap it to play/pause)
+#   media nowplaying      ⏮ ⏯ ⏭ and the current track, with a live spectrum
+#                         behind it; tap it for the full-width visualiser
+#   visualizer            a button that opens the visualiser (works for any audio)
+#   workspaces            Hyprland workspaces; tap one to switch
 #   apps menu overview screenshot record lock nightlight emoji
 #   clock battery
 #   F1 … F12
@@ -25,6 +28,7 @@
 #   { icon = "󰆏", keys = ["LeftCtrl", "C"] }          # key chord
 #   { label = "Dev", layer = "dev" }                   # go to a layer
 #   { preset = "clock", format = "%H:%M:%S" }          # tweak a preset
+#   { plugin = "milkdrop", width = 400 }               # a plugin surface in the layer
 #
 #   icon      any Nerd Font glyph (https://www.nerdfonts.com/cheat-sheet)
 #   label     text, drawn next to the icon if there is one
@@ -44,6 +48,9 @@ max_brightness = 160         # 0–255; the bar follows your screen brightness u
 slider_timeout = 5           # seconds before an opened slider tucks itself away
 fingerprint_width = 330      # width of the Touch ID prompt at the right end
 dim_while_scanning = true    # fade the rest of the bar while Touch ID waits
+# What the full-width visualiser shows; its mode button cycles through these.
+# "bars" is built in; the rest are plugins (touchbar-agent plugin list).
+visualizers = ["milkdrop", "bars"]
 
 [theme]
 # Every colour comes from the current Omarchy theme. Override any role with
@@ -57,7 +64,7 @@ dim_while_scanning = true    # fade the rest of the bar while Touch ID waits
 items = [
   "esc", "fn",
   "gap",
-  "apps", "overview", "screenshot",
+  "apps", "overview", "screenshot", "visualizer",
   "nowplaying",
   "media",
   "gap",
@@ -81,3 +88,7 @@ items = [
 #   { icon = "󰆍", label = "btop", command = "omarchy launch tui btop", width = 130 },
 #   "flex", "clock", "battery",
 # ]
+
+# Per-app layers: when the focused window's class matches, show that layer.
+# [apps]
+# "chromium|firefox" = "dev"
