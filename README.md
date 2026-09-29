@@ -1,45 +1,129 @@
-# Touch Bar for Omarchy
+# touchbard
 
-A macOS-style Touch Bar for the 13" M1 MacBook Pro running Omarchy, in the colours of the current Omarchy theme.
+A themed, macOS-style Touch Bar for Apple Touch Bar MacBooks running Linux. It has sliders, a live equaliser, a Touch ID prompt that points at the sensor, and colours that follow your desktop theme. It has first-class support for [Omarchy](https://omarchy.org) and Hyprland, and works without them.
 
-## What's on it
+![Main layer](docs/main.png)
 
-**Main layer**, left to right: esc · fn · apps · overview · screenshot · now playing · ⏮ ⏯ ⏭ · screen brightness · keyboard light · volume · mute.
+## What you get
 
-- **Sliders** (brightness, keyboard light, volume) work like the Mac. Tap one and it opens full width. Drag anywhere on the track, or tap the icons at either end to step. Faster still: press the button and slide straight away without lifting, and it tidies itself up when you let go. The thin line under each button shows the current level.
-- **fn** (on the bar) switches to F1–F12; tap it again to come back. **Holding the physical fn key** shows the F-keys for as long as you hold it.
-- **Touch ID:** when anything asks for your fingerprint (sudo, polkit, 1Password, the lock screen), the right end of the bar shows a pulsing fingerprint with chevrons running towards the sensor. It turns green on a match, shakes yellow on a retry, and goes red if the scan fails.
-- The bar follows your screen brightness. It dims after 30 s without input and turns off after 60 s; touching it only wakes it. It's off while the lid is closed.
+- **Control strip:** esc · fn · apps · screenshot · equaliser toggle · now playing · ⏮ ⏯ ⏭ · screen brightness · keyboard light · volume · mute.
+- **Real sliders** for brightness, keyboard backlight and volume. Tap one and it opens full width, or press and slide straight away as on a Mac. A hairline under each button shows the current level.
 
-## Customise
+  ![Slider](docs/slider.png)
 
-Edit `~/.config/touchbar/config.toml`. It applies when you save, and the file documents every option. Add buttons that run any command or send any key chord, make your own layers, add a clock or battery, and override theme colours (for example `background = "#000000"` for true black).
+- **F-keys:** tap **fn** on the bar to switch, or hold the physical fn key.
+
+  ![Function keys](docs/function.png)
+
+- **Touch ID prompt:** when `sudo`, polkit, a password manager or the lock screen asks fprintd for a finger, the right end shows a pulsing fingerprint with chevrons running towards the sensor. It turns green on a match, shakes on a retry and goes red on a failure.
+
+  ![Touch ID](docs/touchid.png)
+
+- **Music:** a live equaliser ([cava](https://github.com/karlstav/cava)) or the album cover behind the track title, with a button to switch the equaliser off. Tap the title for a full-width equaliser with a drag-to-seek scrubber, via MPRIS, so it works with any player.
+
+  ![Equaliser](docs/equaliser.png)
+
+- **Theme colours:** read from the current Omarchy theme, updated live when the theme changes. Elsewhere it uses a Tokyo Night palette, and you can override any colour.
+- **Workspaces strip, per-app layers** (switch layout by focused window) and a **clock and battery**, all optional.
+- **Plugins:** anything that can print JSON can draw on the bar (see below).
+- **Power:** follows the screen brightness, dims after 30 s, turns off after 60 s and on lid close. A touch wakes it without triggering anything.
+
+## Compatibility
+
+| Machine | Status |
+|---|---|
+| MacBook Pro 13" M1 (2020, `MacBookPro17,1`) on Asahi / Arch Linux ARM | Daily driver |
+| MacBook Pro 13" M2 (2022, `Mac14,7`) | Should work (same display and digitiser path); untested |
+| Intel T2 MacBook Pros (2018–2020, `appletbdrm`) | Supported in code (backlight and digitiser names); untested |
+
+touchbard finds the Touch Bar by shape (a connected DRM panel far taller than wide) and the digitiser by touch capability, and lays out to whatever width the panel reports.
+
+## Requirements
+
+- **[tiny-dfr](https://github.com/AsahiLinux/tiny-dfr) installed.** touchbard replaces its daemon but relies on its udev rules, which put the Touch Bar on its own seat and name the devices. The installer masks `tiny-dfr.service`.
+- Rust (to build), cairo, pango, libinput.
+- The agent needs Python 3.11+ with PyGObject, plus `wpctl`/`pactl`, and `brightnessctl` for the sliders.
+- Optional: `cava` (equaliser), `hyprctl` (workspaces, per-app layers), fprintd (Touch ID prompt).
+
+On Arch: `pacman -S --needed rust cairo pango libinput python-gobject brightnessctl cava`
+
+## Install
 
 ```bash
-touchbar-agent --dump-layout   # see what your config expands to
-touchbar-agent --layer function
+git clone https://github.com/0800tim/touchbard && cd touchbard
+(cd daemon && cargo build --release)
+sudo system/install.sh        # replaces tiny-dfr's daemon; rolls back by itself if touchbard fails to start
+install -Dm644 system/touchbar-agent.service ~/.config/systemd/user/touchbar-agent.service
+systemctl --user daemon-reload && systemctl --user enable --now touchbar-agent
 ```
 
-## How it fits together
+Omarchy users can repaint instantly on theme changes with `omarchy hook install theme-set system/hooks/touchbar-reload`. The agent also notices by itself within a couple of seconds.
+
+To uninstall: `sudo system/uninstall.sh` (puts tiny-dfr back), then `systemctl --user disable --now touchbar-agent`.
+
+## Configure
+
+Everything lives in `~/.config/touchbar/config.toml`, created on first run and applied as you save. The file documents every option. Some examples:
+
+```toml
+[settings]
+nowplaying = "bars"      # behind the track title: "bars", "art" or "off"
+
+[theme]
+background = "#000000"   # true black, as on macOS
+accent = "magenta"       # or any theme colour name / hex
+
+[layers.control]
+items = [
+  "esc", "fn", "gap",
+  { icon = "󰈹", command = "firefox" },
+  { label = "Build", command = "cd ~/code/app && make", width = 120 },
+  { icon = "󰆏", keys = ["LeftCtrl", "C"] },
+  "flex", "eq", "nowplaying", "media", "gap",
+  "brightness", "keyboard", "gap", "volume", "mute",
+]
+
+[apps]                   # per-app layers, by window class (regex)
+"code|kitty" = "dev"
+```
+
+`touchbar-agent --dump-layout` shows the expanded result. `touchbard --preview out.png layout.json theme.json volume=0.5 finger=scan` renders a frame to a PNG, for designing without the hardware.
+
+## How it works
 
 | Part | Runs as | Job |
 |---|---|---|
-| `touchbard` (Rust) | system service, from boot | owns the Touch Bar screen and digitiser; draws; sends keys through a virtual keyboard |
-| `touchbar-agent` (Python) | systemd user service | theme, config, volume/brightness/media state, Touch ID prompts from fprintd; runs button commands |
+| `touchbard` (Rust) | system service, from boot | owns the Touch Bar's DRM panel and digitiser; draws with cairo/pango; sends keys through a uinput device; manages the backlight. Drops to `nobody` (groups `input`, `video`) after opening its devices. |
+| `touchbar-agent` (Python) | systemd user service | reads the theme and config; tracks volume, brightness, MPRIS, Hyprland and fprintd; runs button commands; hosts plugins |
 
-They talk over `/run/touchbard/touchbard.sock`, one JSON line per message. Until the agent connects, for example at the login screen, the daemon shows a plain key-only layout.
+They talk over `/run/touchbard/touchbard.sock`, one JSON object per line. Until an agent connects (for example at the login screen), the daemon shows a key-only fallback layout.
 
-touchbard starts as root, opens the panel, backlight, uinput and socket, and then drops to `nobody` with only the `input` and `video` groups.
+Notes for anyone hacking on the display path:
+- Apple's `adp` display engine reads rows padded to 64 bytes. A 60 px wide dumb buffer gets a 240-byte pitch from the kernel and shows a sheared image, so allocate 64 px wide.
+- fprintd emits `VerifyFingerSelected` and `VerifyStatus`, but no signal when a scan is abandoned. The prompt clears on Enter or after 35 s.
 
-## Install / uninstall
+## Plugins
 
-```bash
-cd daemon && cargo build --release && cd ..
-sudo system/install.sh                 # replaces tiny-dfr, rolls back if it fails
-install -Dm644 system/touchbar-agent.service ~/.config/systemd/user/touchbar-agent.service
-systemctl --user daemon-reload && systemctl --user enable --now touchbar-agent
+A plugin is a folder with a `plugin.toml` and an executable:
 
-sudo system/uninstall.sh               # back to stock tiny-dfr
+```toml
+name = "cava"
+description = "Live audio spectrum"
+exec = "plugin.py"
+background = "playing"   # optional: run whenever music plays
 ```
 
-`touchbard --preview out.png layout.json theme.json volume=0.5 finger=scan` renders a frame to a PNG, for designing without the hardware.
+The agent runs it and talks over stdin/stdout, one JSON object per line:
+
+- **In:** `{"t":"size","w","h","options"}`, `{"t":"theme",…}`, `{"t":"media","title","artist","position","length","playing",…}`, `{"t":"cmd","cmd":"tap"|"next","x"}`
+- **Out:** `{"t":"bars","v":[0..1,…]}`, `{"t":"state",…}`, `{"t":"log","msg"}`, or `{"t":"frame","w","h","len"}` followed by `len` bytes of BGRA to draw on a surface
+
+Put it on the bar with `{ plugin = "name", width = 400 }`. Install someone else's with `touchbar-agent plugin add <git-url>`, and list them with `touchbar-agent plugin list`. Keep frames small or infrequent: the socket carries every byte.
+
+## Credits
+
+The udev rules and the idea of owning the Touch Bar over DRM come from [tiny-dfr](https://github.com/AsahiLinux/tiny-dfr) by the Asahi Linux project. touchbard is a separate program, not a fork. Icons are [Nerd Fonts](https://www.nerdfonts.com) Material Design glyphs.
+
+## License
+
+MIT

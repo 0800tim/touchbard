@@ -16,7 +16,8 @@
 #                         behind it; tap it for the full-width visualiser
 #   eq                    turns the spectrum behind the title on and off
 #   workspaces            Hyprland workspaces; tap one to switch
-#   apps menu overview screenshot record lock nightlight emoji
+#   apps menu screenshot record lock nightlight emoji   (Omarchy commands)
+#   overview              Quickshell overview (qs -c overview), if you run one
 #   clock battery
 #   F1 … F12
 #   flex                  stretchy empty space
@@ -62,7 +63,7 @@ nowplaying = "bars"          # behind the track title: "bars" (equaliser), "art"
 items = [
   "esc", "fn",
   "gap",
-  "apps", "overview", "screenshot",
+  "apps", "screenshot",
   "eq", "nowplaying",
   "media",
   "gap",
