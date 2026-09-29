@@ -286,7 +286,7 @@ fn draw_item(m: &Model, p: &Painter, pal: &Palette, it: &Item, n: usize, x: f64,
             let Some(title) = m.text("title") else { return };
             let bg_mode = m.layout.settings.nowplaying.as_str();
             // The live spectrum runs behind the title, quietly.
-            if bg_mode == "bars" && m.bars_live(now) {
+            if bg_mode == "bars" && m.eq_on() && m.bars_live(now) {
                 c.save().unwrap();
                 rounded(c, x, MARGIN_Y, w, m.h - 2.0 * MARGIN_Y, RADIUS);
                 c.clip();

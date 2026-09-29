@@ -84,6 +84,8 @@ pub enum Action {
     ToggleLayer(String),
     /// Expand the music visualiser over the bar.
     Visualizer,
+    /// Flip a boolean state key (e.g. "eq") and tell the agent.
+    ToggleFlag(String),
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]

@@ -349,12 +349,21 @@ impl Model {
             };
             self.viz = Some(VizOverlay { mode, scrub: None });
         }
-        vec![]
+        // The agent keeps the spectrum running while this is open, even with the eq off.
+        vec![Effect::Send(Outgoing::Set { k: "viz".into(), v: 1.0 })]
     }
 
     pub fn close_viz(&mut self) -> Vec<Effect> {
-        self.viz = None;
-        vec![]
+        if self.viz.take().is_some() {
+            vec![Effect::Send(Outgoing::Set { k: "viz".into(), v: 0.0 })]
+        } else {
+            vec![]
+        }
+    }
+
+    /// The equaliser behind the title is on unless switched off.
+    pub fn eq_on(&self) -> bool {
+        self.state.get("eq").and_then(|v| v.as_bool()).unwrap_or(true)
     }
 
     // ---- fingerprint --------------------------------------------------------
@@ -450,7 +459,8 @@ impl Model {
 
     /// Whether anything on screen draws the spectrum right now.
     fn shows_spectrum(&self) -> bool {
-        self.viz.is_some() || (self.slider.is_none() && self.items().iter().any(|i| i.kind == Kind::Nowplaying))
+        self.viz.is_some()
+            || (self.slider.is_none() && self.eq_on() && self.items().iter().any(|i| i.kind == Kind::Nowplaying))
     }
 
     /// When `tick` next has work to do, if ever.
@@ -830,6 +840,12 @@ impl Model {
                             fx.extend(self.switch_layer(&target));
                         }
                         Some(Action::Visualizer) => fx.extend(self.open_viz()),
+                        Some(Action::ToggleFlag(k)) => {
+                            let on = !self.flag(&k);
+                            self.state.insert(k.clone(), Value::from(on));
+                            self.hold.insert(k.clone(), now + STATE_HOLD);
+                            fx.push(Effect::Send(Outgoing::Set { k, v: on as u8 as f64 }));
+                        }
                         _ => {}
                     }
                     if let Some((id, x)) = tap {

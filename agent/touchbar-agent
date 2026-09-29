@@ -112,6 +112,7 @@ PRESETS = {
     "media": {"kind": "media", "w": 250},
     "nowplaying": {"kind": "nowplaying", "act": "visualizer"},
     "visualizer": btn("󰺢", w=84, act="visualizer"),
+    "eq": btn("󰺢", w=72, style="plain", act={"toggle_flag": "eq"}, toggle="eq", style_on="subtle"),
     "workspaces": {"kind": "workspaces", "w": 300, "style": "plain",
                    "act": {"cmd": "hyprctl eval 'hl.dispatch(hl.dsp.focus({ workspace = \"{id}\" }))'"}},
     "clock": {"kind": "clock", "w": 190, "style": "plain", "format": "%a %-d %b  %H:%M"},
@@ -369,6 +370,22 @@ class Plugin:
         GLib.timeout_add(800, reap)
 
 
+PREFS = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "touchbar" / "prefs.json"
+
+
+def load_prefs():
+    try:
+        return json.loads(PREFS.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def save_prefs(changes):
+    prefs = {**load_prefs(), **changes}
+    PREFS.parent.mkdir(parents=True, exist_ok=True)
+    PREFS.write_text(json.dumps(prefs))
+
+
 def one_shot(msg):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.connect(SOCKET)
@@ -439,6 +456,7 @@ class Agent:
         self.power_on = True
         self.media = {}
         self.art_url = None
+        self.state["eq"] = load_prefs().get("eq", True)
 
         self.reload(force=True)
         self.connect()
@@ -558,6 +576,12 @@ class Agent:
             pass  # push_all already ran on connect
         elif t == "run":
             self.run(msg.get("cmd", ""))
+        elif t == "set" and msg.get("k") in ("eq", "viz"):
+            on = float(msg["v"]) > 0.5
+            self.state[msg["k"]] = self.sent_state[msg["k"]] = on
+            if msg["k"] == "eq":
+                save_prefs({"eq": on})
+            self.sync_plugins()
         elif t == "set":
             self.queue_set(msg["k"], float(msg["v"]))
         elif t == "surfaces":
@@ -596,7 +620,8 @@ class Agent:
             # Background plugins (cava) run while music plays or a visualiser is up.
             for name, (_, meta) in available.items():
                 spectrum = ((self.layout_msg or {}).get("settings", {}).get("nowplaying", "bars") != "off")
-                if meta.get("background") == "playing" and spectrum and self.state.get("playing"):
+                wanted = self.state.get("eq", True) or self.state.get("viz")
+                if meta.get("background") == "playing" and spectrum and wanted and self.state.get("playing"):
                     want.setdefault(name, None)
         for pid in list(self.plugins):
             if pid not in want or not self.plugins[pid].alive():
@@ -759,6 +784,7 @@ class Agent:
         self.power_on = True
         self.media = {}
         self.art_url = None
+        self.state["eq"] = load_prefs().get("eq", True)
         changes = {}
         for target, vk, mk in (("@DEFAULT_AUDIO_SINK@", "volume", "muted"),
                                ("@DEFAULT_AUDIO_SOURCE@", None, "mic_muted")):

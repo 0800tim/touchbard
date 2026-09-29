@@ -14,6 +14,7 @@
 #   mute mic              toggles that light up red when muted
 #   media nowplaying      ⏮ ⏯ ⏭ and the current track, with a live spectrum
 #                         behind it; tap it for the full-width visualiser
+#   eq                    turns the spectrum behind the title on and off
 #   workspaces            Hyprland workspaces; tap one to switch
 #   apps menu overview screenshot record lock nightlight emoji
 #   clock battery
@@ -62,7 +63,7 @@ items = [
   "esc", "fn",
   "gap",
   "apps", "overview", "screenshot",
-  "nowplaying",
+  "eq", "nowplaying",
   "media",
   "gap",
   "brightness", "keyboard",
