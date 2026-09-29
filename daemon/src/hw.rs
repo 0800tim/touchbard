@@ -87,10 +87,20 @@ impl Output {
                     })
                 })
                 .context("no CRTC for the Touch Bar")?;
-            let db = card.create_dumb_buffer((w as u32, h as u32), DrmFourcc::Xrgb8888, 32)?;
+            // The display engine reads rows padded to 64 bytes, whatever pitch the
+            // kernel reports for a 60 px buffer (240 bytes gives a sheared image).
+            // Allocate 64 px wide and draw into the first 60, as tiny-dfr does.
+            let alloc_w = (w as u32 + 15) & !15;
+            let db = card.create_dumb_buffer((alloc_w, h as u32), DrmFourcc::Xrgb8888, 32)?;
             let fb = card.add_framebuffer(&db, 24, 32)?;
             card.set_crtc(crtc, Some(fb), (0, 0), &[conn], Some(mode))
                 .context("set_crtc (is another Touch Bar daemon still running?)")?;
+            if let Ok(fi) = card.get_framebuffer(fb) {
+                eprintln!(
+                    "touchbard: {} mode {}x{}, dumb {:?} pitch {} len {}, fb {:?} pitch {} bpp {}",
+                    path.display(), w, h, db.size(), db.pitch(), db.size().0 * 4, fi.size(), fi.pitch(), fi.bpp()
+                );
+            }
             return Ok(Some(Output { card, db, fb, crtc, conn, mode, dev_w: w as u32, dev_h: h as u32 }));
         }
         Ok(None)

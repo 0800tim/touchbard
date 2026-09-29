@@ -145,6 +145,7 @@ fn run() -> Result<()> {
     let mut last_minute = chrono::Local::now().format("%H%M").to_string();
     let mut swallowed: HashSet<u32> = HashSet::new();
     let mut digitizer: Option<input::Device> = None;
+    let debug = std::env::var_os("TOUCHBARD_DEBUG").is_some();
 
     eprintln!("touchbard: {}x{} panel ready", out.dev_w, out.dev_h);
 
@@ -224,7 +225,12 @@ fn run() -> Result<()> {
             match &event {
                 Event::Device(DeviceEvent::Added(d)) => {
                     let dev = d.device();
-                    if dev.name().contains("Touch Bar") {
+                    if debug {
+                        eprintln!("device added: '{}'", dev.name());
+                    }
+                    // Match on capability, not name: our own virtual keyboard is
+                    // called "Touch Bar ..." too, and would otherwise win.
+                    if dev.has_capability(input::DeviceCapability::Touch) && dev.name().contains("Touch Bar") {
                         digitizer = Some(dev);
                         // It reappears after resume; put our picture back too.
                         let _ = out.restore();
@@ -255,7 +261,25 @@ fn run() -> Result<()> {
                     }
                     continue;
                 }
+                _ if debug && event.device().name().contains("Touch Bar") && !matches!(event, Event::Touch(_) | Event::Device(_)) => {
+                    eprintln!("non-touch event from Touch Bar: {event:?}");
+                }
                 Event::Touch(te) => {
+                    if debug {
+                        let pos = match te {
+                            TouchEvent::Down(d) => format!("down x={:.0}", d.x_transformed(w)),
+                            TouchEvent::Up(_) => "up".into(),
+                            _ => String::new(),
+                        };
+                        if !pos.is_empty() {
+                            eprintln!(
+                                "touch {pos} from '{}' (digitiser {:?}, backlight off {})",
+                                te.device().name(),
+                                digitizer.as_ref().map(|d| d.name().to_string()),
+                                backlight.is_off()
+                            );
+                        }
+                    }
                     if Some(te.device()) != digitizer {
                         continue;
                     }
