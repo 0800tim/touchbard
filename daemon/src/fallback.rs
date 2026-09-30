@@ -19,6 +19,24 @@ fn esc() -> Item {
     }
 }
 
+/// Touch Bar MacBook Pros without a physical Escape key (2016-2019).
+const NO_PHYSICAL_ESC: [&str; 8] = [
+    "MacBookPro13,2", "MacBookPro13,3", "MacBookPro14,2", "MacBookPro14,3",
+    "MacBookPro15,1", "MacBookPro15,2", "MacBookPro15,3", "MacBookPro15,4",
+];
+
+/// True when this Mac has a real Esc key. Unknown machines get the on-bar Esc.
+pub fn has_physical_esc() -> bool {
+    let model = std::fs::read_to_string("/sys/class/dmi/id/product_name").unwrap_or_default();
+    let model = model.trim();
+    if model.is_empty() {
+        let compat = std::fs::read("/sys/firmware/devicetree/base/compatible").unwrap_or_default();
+        let has = |needle: &[u8]| compat.windows(needle.len()).any(|w| w == needle);
+        return has(b"apple,t8103") || has(b"apple,t8112");
+    }
+    (model.starts_with("MacBookPro") || model.starts_with("Mac1")) && !NO_PHYSICAL_ESC.contains(&model)
+}
+
 pub fn layout() -> Layout {
     let control = vec![
         esc(),
@@ -60,6 +78,13 @@ pub fn layout() -> Layout {
         style: Style::Subtle,
         ..Default::default()
     });
+    // The on-bar Esc only on Macs without a physical one.
+    let (control, function) = if has_physical_esc() {
+        let drop = |v: Vec<Item>| v.into_iter().filter(|i| i.act != Some(Action::Key(vec![Key::Esc]))).collect();
+        (drop(control), drop(function))
+    } else {
+        (control, function)
+    };
     let mut layers = HashMap::new();
     layers.insert("control".to_string(), control);
     layers.insert("function".to_string(), function);

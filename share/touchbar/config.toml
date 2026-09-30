@@ -44,6 +44,7 @@
 
 [settings]
 default_layer = "control"
+esc = "auto"                 # on-bar Esc: "auto" (only on Macs without a physical Esc key), "show" or "hide"
 fn_key_layer = "function"    # shown while you hold the fn key
 dim_after = 30               # seconds of no input before the bar dims
 off_after = 60               # ...and turns off (touch it to wake)

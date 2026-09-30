@@ -96,7 +96,7 @@ def key(k, label=None, icon=None, w=None, **kw):
 
 
 PRESETS = {
-    "esc": key("Esc", label="esc", w=96, pin=True),
+    "esc": key("Esc", label="esc", w=96, pin=True, role="esc"),
     "fn": btn(label="fn", w=80, style="subtle", act={"toggle_layer": "function"},
               toggle="layer:function", style_on="accent"),
     "back": btn(G["back"], w=80, style="subtle", act={"layer": "control"}),
@@ -170,6 +170,28 @@ def expand_item(entry):
     return base
 
 
+# Touch Bar MacBook Pros without a physical Escape key (2016-2019); every
+# later Touch Bar model (16" 2019, 13" 2020 Intel, M1, M2) has one.
+NO_PHYSICAL_ESC = {"MacBookPro13,2", "MacBookPro13,3", "MacBookPro14,2", "MacBookPro14,3",
+                   "MacBookPro15,1", "MacBookPro15,2", "MacBookPro15,3", "MacBookPro15,4"}
+
+
+def has_physical_esc():
+    """True when this Mac has a real Esc key, so the Touch Bar needn't show one.
+    Unknown machines get the on-bar Esc, so nobody is ever left without it."""
+    try:
+        model = Path("/sys/class/dmi/id/product_name").read_text().strip()
+    except OSError:
+        model = ""
+    if not model:
+        try:
+            compat = Path("/sys/firmware/devicetree/base/compatible").read_bytes()
+            return b"apple,t8103" in compat or b"apple,t8112" in compat  # M1 / M2 MacBook Pro 13"
+        except OSError:
+            return False
+    return model.startswith(("MacBookPro", "Mac1")) and model not in NO_PHYSICAL_ESC
+
+
 def load_config():
     path = CONFIG if CONFIG.exists() else DEFAULT_CONFIG
     with open(path, "rb") as f:
@@ -185,6 +207,11 @@ def build_layout(cfg):
     if not layers:
         raise ValueError("config has no [layers.<name>] with items")
     s = cfg.get("settings", {})
+    # The on-bar Esc only where there's no physical one: esc = "auto" | "show" | "hide".
+    esc = s.get("esc", "auto")
+    if esc == "hide" or (esc == "auto" and has_physical_esc()):
+        for name in layers:
+            layers[name] = [it for it in layers[name] if it.get("role") != "esc"]
     if s.get("nowplaying") == "off":
         # No equaliser to expand into, so tapping the title plays/pauses.
         for items in layers.values():

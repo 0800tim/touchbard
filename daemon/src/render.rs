@@ -1890,7 +1890,7 @@ fn draw_lyrics(m: &Model, p: &Painter, pal: &Palette, x: f64, w: f64, cy: f64, p
         return;
     }
     let gap = if full { 90.0 } else { 60.0 };
-    let widths: Vec<f64> = lines.iter().map(|(_, l)| p.text_width(l, px, true)).collect();
+    let widths: Vec<f64> = lines.iter().map(|(_, l)| lyric_width(m, p, l, px, full)).collect();
     let mut starts = Vec::with_capacity(lines.len());
     let mut acc = 0.0;
     for wd in &widths {
@@ -1928,7 +1928,6 @@ fn draw_lyrics(m: &Model, p: &Painter, pal: &Palette, x: f64, w: f64, cy: f64, p
         }
         let is_cur = cur == Some(i);
         let dy = if is_cur { -beat * 3.0 } else { 0.0 };
-        let cx = lx + widths[i] / 2.0;
         if is_cur {
             let lit = if full {
                 viz_color(m, pal, t * 0.08, 0.85, 1.0).mix(Rgb(1.0, 1.0, 1.0), title_lift(m, 0.15))
@@ -1936,17 +1935,15 @@ fn draw_lyrics(m: &Model, p: &Painter, pal: &Palette, x: f64, w: f64, cy: f64, p
                 pal.accent
             };
             // Unsung part, then the sung part filled over it.
-            pal.fg.set_a(c, 0.55);
-            p.text(line, px, true, cx, cy + dy, None);
+            lyric_draw(m, p, line, lx, cy + dy, px, full, pal.fg, 0.55, t, true);
             c.save().unwrap();
-            c.rectangle(lx - 2.0, cy - m.h / 2.0, widths[i] * progress + 2.0, m.h);
+            c.rectangle(lx - 4.0, cy - m.h / 2.0, widths[i] * progress + 4.0, m.h);
             c.clip();
-            lit.set(c);
-            p.text(line, px, true, cx, cy + dy, None);
+            lyric_draw(m, p, line, lx, cy + dy, px, full, lit, 1.0, t, true);
             c.restore().unwrap();
         } else {
-            pal.fg_dim.set_a(c, if cur.is_some_and(|k| i < k) { 0.35 } else { 0.55 });
-            p.text(line, px, true, cx, cy, None);
+            let a = if cur.is_some_and(|k| i < k) { 0.35 } else { 0.55 };
+            lyric_draw(m, p, line, lx, cy, px, full, pal.fg_dim, a, t, false);
         }
     }
     c.restore().unwrap();
@@ -1958,5 +1955,115 @@ fn draw_lyrics(m: &Model, p: &Painter, pal: &Palette, x: f64, w: f64, cy: f64, p
         c.set_source(&g).unwrap();
         c.rectangle(x0.min(x1), cy - m.h / 2.0, 30.0, m.h);
         c.fill().unwrap();
+    }
+}
+
+thread_local! {
+    /// Glyph advance widths, keyed by (character, size in quarter pixels).
+    static CHAR_W: std::cell::RefCell<std::collections::HashMap<(char, u32), f64>> = std::cell::RefCell::new(Default::default());
+}
+
+fn char_width(p: &Painter, ch: char, px: f64) -> f64 {
+    let key = (ch, (px * 4.0) as u32);
+    if let Some(w) = CHAR_W.with(|m| m.borrow().get(&key).copied()) {
+        return w;
+    }
+    let w = if ch == ' ' { px * 0.35 } else { p.text_width(&ch.to_string(), px, true) };
+    CHAR_W.with(|m| m.borrow_mut().insert(key, w));
+    w
+}
+
+/// Pixel size of the 5x7 lyric styles, or None for the font-based ones.
+fn lyric_cell(style: u8) -> Option<f64> {
+    match style {
+        0 | 5 => Some(6.0),
+        3 => Some(5.0),
+        _ => None,
+    }
+}
+
+fn lyric_px(style: u8) -> f64 {
+    if style == 2 { 46.0 } else { 34.0 }
+}
+
+/// Width of a lyric line in the chosen text style (full screen), or the
+/// plain font (condensed bar).
+fn lyric_width(m: &Model, p: &Painter, line: &str, px: f64, full: bool) -> f64 {
+    if !full {
+        return p.text_width(line, px, true);
+    }
+    match lyric_cell(m.text_style) {
+        Some(cell) => line.chars().count() as f64 * 6.0 * cell,
+        None if m.text_style == 2 => p.text_width(line, lyric_px(2), true),
+        None => line.chars().map(|ch| char_width(p, ch, lyric_px(m.text_style))).sum(),
+    }
+}
+
+/// One lyric line, left edge at `lx`, in the chosen text style. `lively`
+/// lets letters move (the line being sung); the rest stay still.
+#[allow(clippy::too_many_arguments)]
+fn lyric_draw(m: &Model, p: &Painter, line: &str, lx: f64, cy: f64, px: f64, full: bool, col: Rgb, alpha: f64, t: f64, lively: bool) {
+    let c = p.c;
+    if !full {
+        col.set_a(c, alpha);
+        p.text(line, px, true, lx + p.text_width(line, px, true) / 2.0, cy, None);
+        return;
+    }
+    let style = m.text_style;
+    let motion = if lively { 1.0 } else { 0.0 };
+    if let Some(cell) = lyric_cell(style) {
+        let top = cy - 3.5 * cell;
+        for (i, ch) in line.chars().enumerate() {
+            let x = lx + i as f64 * 6.0 * cell;
+            if style == 0 {
+                // big rounded dots, the dot matrix
+                let g = glyph_5x7(ch).unwrap_or_else(|| glyph_5x7('?').unwrap());
+                c.set_source_rgba(col.0, col.1, col.2, alpha);
+                let d = cell - 1.0;
+                for (cx, byte) in g.iter().enumerate() {
+                    let bob = (t * 4.0 + (i * 6 + cx) as f64 * 0.3).sin() * 1.5 * motion;
+                    for row in 0..7 {
+                        if byte >> row & 1 == 1 {
+                            rounded(c, x + cx as f64 * cell, top + row as f64 * cell + bob, d, d, d * 0.3);
+                        }
+                    }
+                }
+                c.fill().unwrap();
+            } else {
+                pixel_letter(c, ch, x, top, cell, col, alpha);
+            }
+        }
+        return;
+    }
+    let size = lyric_px(style);
+    if style == 2 {
+        // outline: one huge hollow line with a soft glow
+        let l = p.layout(line, size, true);
+        let (_, ext) = l.pixel_extents();
+        c.move_to(lx, cy - ext.height() as f64 / 2.0);
+        pangocairo::functions::layout_path(c, &l);
+        c.set_source_rgba(col.0, col.1, col.2, 0.2 * alpha);
+        c.set_line_width(6.0);
+        c.stroke_preserve().unwrap();
+        c.set_source_rgba(col.0, col.1, col.2, alpha);
+        c.set_line_width(1.6);
+        c.stroke().unwrap();
+        return;
+    }
+    // wave and scatter: letter by letter
+    let mut x = lx;
+    for (i, ch) in line.chars().enumerate() {
+        let cw = char_width(p, ch, size);
+        if !ch.is_whitespace() {
+            let fi = i as f64;
+            let (dx, dy) = if style == 4 {
+                ((t * 0.7 + fi * 1.3).sin() * 2.5 * motion, (t * 0.9 + fi * 0.7).cos() * 3.0 * motion)
+            } else {
+                (0.0, (t * 3.2 + fi * 0.55).sin() * 3.0 * motion)
+            };
+            col.set_a(c, alpha);
+            p.text(&ch.to_string(), size, true, x + cw / 2.0 + dx, cy + dy, None);
+        }
+        x += cw;
     }
 }
