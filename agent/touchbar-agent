@@ -687,7 +687,8 @@ def clean_track(title, artist):
 
 
 def fetch_lyrics(title, artist, length):
-    """Timed lyric lines for a track, [] if none. Cached on disk per track."""
+    """Timed lyric lines for a track: [] if it has none, None if LRCLIB
+    couldn't be reached (try again later). Cached on disk per track."""
     import hashlib
     from urllib.parse import urlencode
     t, a = clean_track(title, artist)
@@ -716,7 +717,7 @@ def fetch_lyrics(title, artist, length):
             found = hits[0] if hits else None
     except Exception as e:
         log(f"lyrics: {e}")
-        return []  # don't cache a network failure
+        return None  # don't cache a network failure
     lines = parse_lrc(found.get("syncedLyrics")) if found else []
     if not lines and found and found.get("plainLyrics") and length:
         # Unsynced: spread the lines evenly over the song, a best effort.
@@ -1609,17 +1610,40 @@ class Agent:
         self.lyrics_lines = []
         offset = load_offsets().get(self.lyrics_store_key, 0.0) if self.lyrics_store_key else 0.0
         self.push_state(lyrics=[], lyrics_status="searching" if m.get("title") else "none", lyrics_offset=offset)
-        if not m.get("title"):
-            return
+        if m.get("title"):
+            # Players publish a new track in pieces (title first, then artist
+            # and length). Let it settle, or we'd look up a half-updated track
+            # and flash "no lyrics" just before finding them.
+            self.lyrics_attempt(key, 0, 1.5)
+
+    def lyrics_attempt(self, key, tries, delay):
         import threading
 
-        def work():
-            lines = fetch_lyrics(m.get("title"), m.get("artist"), m.get("length"))
-            if key == self.lyrics_key:
-                status = "found" if lines else "none"
-                self.lyrics_lines = lines
-                GLib.idle_add(lambda: (self.push_state(lyrics=lines, lyrics_status=status), False)[1])
-        threading.Thread(target=work, daemon=True).start()
+        def start():
+            if key != self.lyrics_key:
+                return False
+            m = dict(self.media)
+
+            def work():
+                lines = fetch_lyrics(m.get("title"), m.get("artist"), m.get("length"))
+                GLib.idle_add(lambda: (self.lyrics_done(key, tries, lines), False)[1])
+            threading.Thread(target=work, daemon=True).start()
+            return False
+        GLib.timeout_add(int(delay * 1000), start)
+
+    def lyrics_done(self, key, tries, lines):
+        if key != self.lyrics_key:
+            return
+        if lines is None:
+            # LRCLIB unreachable (it answers 503 at times): that says nothing
+            # about the song, so keep "searching" and retry at 5, 15, 45 s.
+            if tries < 3:
+                self.lyrics_attempt(key, tries + 1, 5 * 3 ** tries)
+            else:
+                self.push_state(lyrics_status="unavailable")
+            return
+        self.lyrics_lines = lines
+        self.push_state(lyrics=lines, lyrics_status="found" if lines else "none")
 
     def media_tick(self):
         # Players only signal changes, not progress; re-read to keep the time honest.

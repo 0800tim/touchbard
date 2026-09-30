@@ -494,6 +494,7 @@ impl Model {
             (false, ..) => "Karaoke mode off",
             (true, true, _) => "Karaoke mode on",
             (true, false, Some("searching")) => "Karaoke on · finding lyrics…",
+            (true, false, Some("unavailable")) => "Karaoke on · lyrics service unreachable",
             (true, false, _) => "Karaoke on · no lyrics for this song",
         };
         self.toast = Some((msg.to_string(), now));
