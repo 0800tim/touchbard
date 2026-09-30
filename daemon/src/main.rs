@@ -544,6 +544,8 @@ fn preview(args: &[String]) -> Result<()> {
                 }
             }
             "style" => model.bar_style = v.parse()?,
+            "text" => model.text_style = v.parse()?,
+            "mood" => model.mood = Some(v.to_string()),
             "scrub" => {
                 if let Some(z) = &mut model.viz {
                     z.scrub = Some(v.parse()?);

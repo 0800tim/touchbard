@@ -341,7 +341,8 @@ fn draw_item(m: &Model, p: &Painter, pal: &Palette, it: &Item, n: usize, x: f64,
                 c.save().unwrap();
                 c.rectangle(tx - 2.0, MARGIN_Y, avail + 4.0, m.h - 2.0 * MARGIN_Y);
                 c.clip();
-                beat_text(m, p, pal, &text, tx + tw / 2.0, cy, Some(tw + 1.0), tx, now);
+                pal.fg.set(c);
+                p.text(&text, LABEL_PX, false, tx + tw / 2.0, cy, Some(tw + 1.0));
                 c.restore().unwrap();
             }
         }
@@ -724,6 +725,21 @@ fn draw_viz(m: &Model, p: &Painter, pal: &Palette, v: &VizOverlay, now: Instant)
             Part::Play => button(if playing { "󰏤" } else { "󰐊" }, pal.accent),
             Part::Next => button("󰒭", pal.fg),
             Part::Preset => button("󰑓", pal.fg),
+            Part::Colors => {
+                // The palette icon wears the current mood's colours.
+                p.pill(x, w, pal.surface.mix(pal.accent, 0.45 * pl));
+                let t = (now - m.epoch).as_secs_f64();
+                let g = LinearGradient::new(x + 18.0, 0.0, x + w - 18.0, 0.0);
+                for k in 0..=4 {
+                    let f = k as f64 / 4.0;
+                    let col = viz_color(m, pal, f * 0.8 + t * 0.05, 0.85, 1.0);
+                    g.add_color_stop_rgb(f, col.0, col.1, col.2);
+                }
+                c.set_source(&g).unwrap();
+                p.text("\u{F03D8}", ICON_PX, false, x + w / 2.0, m.h / 2.0, None);
+                c.new_path();
+            }
+            Part::Font => button("Aa", pal.fg),
             Part::Mode => {
                 let icon = match v.mode.as_str() {
                     "bars" => "󰺢",
@@ -777,7 +793,10 @@ fn draw_viz(m: &Model, p: &Painter, pal: &Palette, v: &VizOverlay, now: Instant)
                     p.text_width(&format!("{} / {}", fmt_time(pos), fmt_time(len)), 18.0, true) + 36.0
                 });
                 if !label.is_empty() {
-                    draw_dot_title(m, pal, c, &label, x + 10.0, w - 20.0 - time_w, y, h, now);
+                    match m.text_style {
+                        1..=5 => draw_letter_title(m, p, pal, &label, x + 10.0, w - 20.0 - time_w, y, h, now),
+                        _ => draw_dot_title(m, pal, c, &label, x + 10.0, w - 20.0 - time_w, y, h, now),
+                    }
                 }
                 if let Some((pos, len)) = shown {
                     let t = format!("{} / {}", fmt_time(pos), fmt_time(len));
@@ -972,7 +991,8 @@ fn draw_marquee(m: &Model, p: &Painter, pal: &Palette, text: &str, full: f64, tx
         if bx > tx + avail || bx + cycle < tx {
             continue;
         }
-        beat_text(m, p, pal, text, bx + full / 2.0, cy, None, bx, now);
+        pal.fg.set(c);
+        p.text(text, LABEL_PX, false, bx + full / 2.0, cy, None);
         draw_comet(m, c, pal, bx + full + gap_a, cy, t);
     }
     c.restore().unwrap();
@@ -1214,7 +1234,21 @@ fn draw_smoke_bars(m: &Model, c: &Context, pal: &Palette, x: f64, y: f64, w: f64
 /// every colour mode.
 fn viz_color(m: &Model, pal: &Palette, h: f64, s: f64, v: f64) -> Rgb {
     let h = h.rem_euclid(1.0);
-    let base = match m.layout.settings.viz_colors.as_str() {
+    let mood = m.mood_name();
+    if let Some((colours, stepped, dim)) = mood_palette(mood) {
+        // Fixed moods: blended gradients, or hard colour blocks for disco.
+        let n = colours.len();
+        let base = if stepped {
+            Rgb::parse(colours[(h * n as f64) as usize % n])
+        } else {
+            let pos = h * n as f64;
+            let (i, f) = (pos.floor() as usize % n, pos - pos.floor());
+            Rgb::parse(colours[i]).mix(Rgb::parse(colours[(i + 1) % n]), f * f * (3.0 - 2.0 * f))
+        };
+        let k = v * dim;
+        return Rgb(base.0 * k, base.1 * k, base.2 * k);
+    }
+    let base = match mood {
         "rainbow" => return hsv(h, s, v),
         "theme" => pal.accent.mix(pal.accent2, 1.0 - (2.0 * h - 1.0).abs()),
         _ => {
@@ -1246,27 +1280,6 @@ fn palette_lerp(colours: &[String], h: f64) -> Rgb {
     Rgb::parse(&colours[i]).mix(Rgb::parse(&colours[(i + 1) % n]), f)
 }
 
-/// The track title, dancing to the beat: it swells, hops and jitters on each
-/// bass hit and flashes toward the song's colour, then settles.
-#[allow(clippy::too_many_arguments)]
-fn beat_text(m: &Model, p: &Painter, pal: &Palette, text: &str, cx: f64, cy: f64, max_w: Option<f64>, anchor_x: f64, now: Instant) {
-    let c = p.c;
-    let b = m.beat_level(now);
-    let t = (now - m.epoch).as_secs_f64();
-    c.save().unwrap();
-    if b > 0.01 {
-        let jx = (t * 53.0).sin() * 1.6 * b;
-        let jy = (t * 41.0).cos() * 1.2 * b - 2.5 * b;
-        let scale = 1.0 + 0.08 * b;
-        // Grow from the anchor (the text's left edge when it's standing still).
-        c.translate(anchor_x + jx, cy + jy);
-        c.scale(scale, scale);
-        c.translate(-anchor_x, -cy);
-    }
-    pal.fg.mix(viz_color(m, pal, (t * 0.1).fract(), 0.9, 1.0), 0.8 * b).set(c);
-    p.text(text, LABEL_PX, false, cx, cy, max_w);
-    c.restore().unwrap();
-}
 
 thread_local! {
     /// The last title's dot raster, so it's rasterised once per track, not per frame.
@@ -1390,7 +1403,8 @@ fn draw_dot_title(m: &Model, pal: &Palette, c: &Context, text: &str, x: f64, w: 
                 }
                 let hue = f * 0.9 + t * 0.08 + row as f64 * 0.018;
                 // Lifted toward white so the title stands out from the visualiser behind.
-                let col_rgb = viz_color(m, pal, hue, 0.85, 1.0).mix(Rgb(1.0, 1.0, 1.0), 0.28 - 0.18 * level);
+                let lift = title_lift(m, 0.28 - 0.18 * level);
+                let col_rgb = viz_color(m, pal, hue, 0.85, 1.0).mix(Rgb(1.0, 1.0, 1.0), lift);
                 let (dx0, dy0) = (px + 0.5, top + row as f64 * cell + 0.5);
                 let d = cell - 1.0;
                 match m.bar_style {
@@ -1624,4 +1638,192 @@ fn dots_5x7(text: &str) -> Option<(usize, usize, Vec<bool>)> {
         }
     }
     Some((cols, rows, lit))
+}
+
+/// The fixed colour moods: (colours, stepped rather than blended, brightness).
+fn mood_palette(mood: &str) -> Option<(&'static [&'static str], bool, f64)> {
+    Some(match mood {
+        "mono" => (&["#f4f4f4", "#9a9a9a", "#3a3a3a", "#c8c8c8", "#6a6a6a"][..], false, 0.9),
+        "smoke" => (&["#1f3b5c", "#4a78a6", "#8fb3d4", "#2c5480", "#6b93bd"][..], false, 0.85),
+        "amethyst" => (&["#2e1052", "#5b24a0", "#8a4fd0", "#401777", "#b07fe8"][..], false, 0.85),
+        "matrix" => (&["#00ff41", "#008f11", "#39ff14", "#005c0b", "#00c832"][..], false, 1.0),
+        "disco" => (&["#ff0055", "#ffcc00", "#00d4ff", "#7cff00", "#b000ff", "#ff6a00"][..], true, 1.0),
+        _ => return None,
+    })
+}
+
+/// How far the title's colour is lifted toward white so it reads over the
+/// visuals: dark moods need it, bright ones (matrix, disco) stay pure.
+fn title_lift(m: &Model, default: f64) -> f64 {
+    match m.mood_name() {
+        "smoke" | "amethyst" => 0.4,
+        "mono" => 0.1,
+        "matrix" | "disco" => 0.0,
+        _ => default,
+    }
+}
+
+/// Typewriter timing: letters shown at `secs` into the cycle (type, hold, erase, pause).
+fn typewriter_count(n: usize, secs: f64) -> usize {
+    let (typing, hold, erasing, pause) = (n as f64 / 12.0, 3.0, n as f64 / 30.0, 0.6);
+    let tc = secs % (typing + hold + erasing + pause);
+    if tc < typing {
+        (tc * 12.0) as usize
+    } else if tc < typing + hold {
+        n
+    } else if tc < typing + hold + erasing {
+        n.saturating_sub(((tc - typing - hold) * 30.0) as usize)
+    } else {
+        0
+    }
+}
+
+/// One letter in the 5x7 font as square pixels of side `cell`, top-left at (x, top).
+fn pixel_letter(c: &Context, ch: char, x: f64, top: f64, cell: f64, col: Rgb, alpha: f64) {
+    let g = glyph_5x7(ch).unwrap_or_else(|| glyph_5x7('?').unwrap());
+    c.set_source_rgba(col.0, col.1, col.2, alpha);
+    for (cx, byte) in g.iter().enumerate() {
+        for row in 0..7 {
+            if byte >> row & 1 == 1 {
+                c.rectangle(x + cx as f64 * cell, top + row as f64 * cell, cell - 1.0, cell - 1.0);
+            }
+        }
+    }
+    c.fill().unwrap();
+}
+
+/// The full-screen title drawn letter by letter. Each text style has its own
+/// type and its own response to the music:
+/// 1 wave (bold letters bobbing on their frequencies), 2 outline (huge hollow
+/// glowing letters drifting), 3 typewriter (crisp pixels typed out, cursor
+/// flashing on the beat), 4 scatter (letters drifting like particles in smoke,
+/// pushed out by beats), 5 blocks (chunky pixels lighting up in sequence).
+#[allow(clippy::too_many_arguments)]
+fn draw_letter_title(m: &Model, p: &Painter, pal: &Palette, text: &str, x: f64, w: f64, y: f64, h: f64, now: Instant) {
+    let c = p.c;
+    let chars: Vec<char> = text.chars().collect();
+    if chars.is_empty() || w <= 0.0 {
+        return;
+    }
+    let t = (now - m.epoch).as_secs_f64();
+    let beat = m.beat_level(now);
+    let cy = y + h / 2.0;
+    let n = chars.len();
+    let style = m.text_style;
+    let white = Rgb(1.0, 1.0, 1.0);
+    let lift = |col: Rgb, k: f64| col.mix(white, title_lift(m, k));
+    // Pixel styles sit on the 5x7 grid; the others use the real font.
+    let (px, cell) = match style {
+        2 => (46.0, 0.0),
+        3 => (0.0, 4.0),
+        5 => (0.0, 6.0),
+        _ => (34.0, 0.0),
+    };
+    let pixel = cell > 0.0;
+    let widths: Vec<f64> = chars
+        .iter()
+        .map(|ch| if pixel { 6.0 * cell } else { p.text_width(&ch.to_string(), px, true).max(px * 0.3) })
+        .collect();
+    let total: f64 = widths.iter().sum();
+    let gap = 70.0;
+    let off = if total > w {
+        let moving = if m.flag("playing") { ((now - m.title_since).as_secs_f64() - MARQUEE_REST).max(0.0) } else { 0.0 };
+        (moving * MARQUEE_SPEED) % (total + gap)
+    } else {
+        -(w - total) / 2.0
+    };
+    let shown = if style == 3 { typewriter_count(n, (now - m.title_since).as_secs_f64()) } else { n };
+
+    c.save().unwrap();
+    c.rectangle(x, y, w, h);
+    c.clip();
+    let copies = if total > w { 2 } else { 1 };
+    for k in 0..copies {
+        let mut lx = x - off + k as f64 * (total + gap);
+        for (i, ch) in chars.iter().enumerate() {
+            let lw = widths[i];
+            if i >= shown || lx + lw < x - 20.0 || lx > x + w + 20.0 || ch.is_whitespace() {
+                lx += lw;
+                continue;
+            }
+            let fi = i as f64;
+            let f = fi / n as f64;
+            let level = level_at(&m.bars, f);
+            let hue = f * 0.9 + t * 0.08;
+            let s = ch.to_string();
+            match style {
+                1 => {
+                    // wave: bold letters bobbing, each on its own frequency
+                    let dy = (t * 3.2 + fi * 0.55).sin() * 3.5 - (level - 0.3) * 10.0 - beat * 3.0;
+                    let col = lift(viz_color(m, pal, hue, 0.85, 1.0), 0.2);
+                    pal.bg.set_a(c, 0.7);
+                    p.text(&s, px, true, lx + lw / 2.0 + 1.5, cy + dy + 1.5, None);
+                    col.set(c);
+                    p.text(&s, px, true, lx + lw / 2.0, cy + dy, None);
+                }
+                2 => {
+                    // outline: huge hollow letters with a soft glow, drifting slowly
+                    let dy = (t * 0.8 + fi * 0.35).sin() * 3.0;
+                    let l = p.layout(&s, px, true);
+                    let (_, ext) = l.pixel_extents();
+                    let scale = 1.0 + 0.06 * beat;
+                    c.save().unwrap();
+                    c.translate(lx + lw / 2.0, cy + dy);
+                    c.scale(scale, scale);
+                    c.move_to(-ext.width() as f64 / 2.0, -ext.height() as f64 / 2.0);
+                    pangocairo::functions::layout_path(c, &l);
+                    c.restore().unwrap();
+                    let col = lift(viz_color(m, pal, hue, 0.85, 1.0), 0.15);
+                    c.set_source_rgba(col.0, col.1, col.2, 0.18 + 0.2 * level);
+                    c.set_line_width(6.0);
+                    c.stroke_preserve().unwrap();
+                    c.set_source_rgba(col.0, col.1, col.2, 0.95);
+                    c.set_line_width(1.6);
+                    c.stroke().unwrap();
+                }
+                3 => {
+                    // typewriter: crisp pixels; the newest letter glows
+                    let newest = i + 1 == shown && shown < n;
+                    let col = viz_color(m, pal, hue, 0.85, 0.6 + 0.4 * level).mix(white, title_lift(m, 0.0));
+                    let col = if newest { col.mix(white, 0.6) } else { col };
+                    pixel_letter(c, *ch, lx, cy - 3.5 * cell, cell, col, 1.0);
+                }
+                4 => {
+                    // scatter: letters adrift like particles in smoke, pushed out by beats
+                    let dx = (t * 0.7 + fi * 1.3).sin() * 5.0 + (t * 0.3 + fi).cos() * 3.0 + beat * (fi * 2.1).sin() * 8.0;
+                    let dy = (t * 0.9 + fi * 0.7).cos() * 6.0 + beat * (fi * 1.7).cos() * 6.0;
+                    let a = 0.55 + 0.45 * (0.5 + 0.5 * (t * 1.1 + fi).sin());
+                    let col = lift(viz_color(m, pal, hue, 0.8, 1.0), 0.15);
+                    for (sx, sy, sa) in [(-4.0, 2.0, 0.12), (3.0, -2.0, 0.12)] {
+                        c.set_source_rgba(col.0, col.1, col.2, sa * a);
+                        p.text(&s, px, true, lx + lw / 2.0 + dx + sx, cy + dy + sy, None);
+                    }
+                    c.set_source_rgba(col.0, col.1, col.2, a);
+                    p.text(&s, px, true, lx + lw / 2.0 + dx, cy + dy, None);
+                }
+                _ => {
+                    // blocks: chunky pixels; letters light up in sequence on each beat
+                    let seq = (m.beats as usize) % n.max(1);
+                    let hit = if i == seq || (i + m.beats as usize) % 4 == 0 { beat } else { 0.0 };
+                    let bright = (0.3 + 0.7 * level.max(hit)).min(1.0);
+                    let col = viz_color(m, pal, f + m.beats as f64 * 0.137, 0.9, bright);
+                    let jump = hit * 4.0;
+                    pixel_letter(c, *ch, lx, cy - 3.5 * cell - jump, cell, col, 1.0);
+                }
+            }
+            lx += lw;
+        }
+        // The typewriter's cursor, flashing on the beat.
+        if style == 3 && k == 0 && shown < n {
+            let cx = x - off + widths[..shown].iter().sum::<f64>();
+            let on = (t * 2.0).fract() < 0.5 || beat > 0.3;
+            if on {
+                let col = viz_color(m, pal, t * 0.08, 0.85, 1.0).mix(white, 0.3 * beat);
+                c.set_source_rgb(col.0, col.1, col.2);
+                c.rectangle(cx + 1.0, cy - 3.5 * cell, 5.0 * cell - 1.0, 7.0 * cell - 1.0);
+                c.fill().unwrap();
+            }
+        }
+    }
+    c.restore().unwrap();
 }

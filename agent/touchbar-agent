@@ -720,7 +720,11 @@ class Agent:
         self.power_on = True
         self.media = {}
         self.art_url = None
-        self.state["eq"] = load_prefs().get("eq", True)
+        prefs = load_prefs()
+        self.state["eq"] = prefs.get("eq", True)
+        for k in ("bar_style", "text_style", "viz_mood"):
+            if isinstance(prefs.get(k), int):
+                self.state[k] = prefs[k]
 
         self.reload(force=True)
         self.connect()
@@ -851,6 +855,11 @@ class Agent:
             pass  # push_all already ran on connect
         elif t == "run":
             self.run(msg.get("cmd", ""))
+        elif t == "set" and msg.get("k") in ("bar_style", "text_style", "viz_mood"):
+            # Full-screen choices: remember them, and hand them back on reconnect.
+            n = int(float(msg["v"]))
+            self.state[msg["k"]] = self.sent_state[msg["k"]] = n
+            save_prefs({msg["k"]: n})
         elif t == "set" and msg.get("k") in ("eq", "viz"):
             on = float(msg["v"]) > 0.5
             self.state[msg["k"]] = self.sent_state[msg["k"]] = on

@@ -20,6 +20,10 @@ const BARS_STALE: Duration = Duration::from_millis(400);
 pub const PIXELS_STALE: Duration = Duration::from_millis(1500);
 /// mirror, floor+peaks, dots, ripple, aurora, pixels, comet
 pub const BAR_STYLES: u8 = 7;
+/// Colour moods for the visualisers, in the order the mood button cycles.
+pub const MOODS: [&str; 8] = ["music", "mono", "smoke", "amethyst", "matrix", "disco", "rainbow", "theme"];
+/// dot matrix, wave, outline, typewriter, scatter, blocks
+pub const TEXT_STYLES: u8 = 6;
 
 /// Something the daemon has to do in response to a touch.
 pub enum Effect {
@@ -45,6 +49,10 @@ pub enum Part {
     WHours,
     Viz,
     Preset,
+    /// Cycles the colour mood.
+    Colors,
+    /// Cycles how the title is drawn.
+    Font,
     Mode,
     Prev,
     Play,
@@ -126,6 +134,11 @@ pub struct Model {
     pub bass_avg: f64,
     pub beat: f64,
     pub beat_at: Instant,
+    /// Beats seen so far: light-up styles step on each one.
+    pub beats: u64,
+    /// Chosen in full-screen mode; remembered by the agent across restarts.
+    pub mood: Option<String>,
+    pub text_style: u8,
     pub palette_at: Instant,
     /// Set by the renderer while a long title is scrolling, so frames keep coming.
     pub marquee: std::cell::Cell<bool>,
@@ -170,6 +183,9 @@ impl Model {
             bass_avg: 0.0,
             beat: 0.0,
             beat_at: now - Duration::from_secs(1),
+            beats: 0,
+            mood: None,
+            text_style: 0,
             palette_at: now,
             marquee: std::cell::Cell::new(false),
             grabs: HashMap::new(),
@@ -247,6 +263,13 @@ impl Model {
             if k == "palette" && self.state.get("palette") != Some(&v) {
                 self.prev_palette = self.palette();
                 self.palette_at = now;
+            }
+            // Full-screen choices the agent remembers for us.
+            match (k.as_str(), v.as_u64()) {
+                ("bar_style", Some(n)) => self.bar_style = (n % BAR_STYLES as u64) as u8,
+                ("text_style", Some(n)) => self.text_style = (n % TEXT_STYLES as u64) as u8,
+                ("viz_mood", Some(n)) => self.mood = Some(MOODS[n as usize % MOODS.len()].to_string()),
+                _ => {}
             }
             if k == "title" && self.state.get("title") != Some(&v) {
                 self.title_since = now;
@@ -340,6 +363,7 @@ impl Model {
         if rise > 0.04 && now - self.beat_at > Duration::from_millis(120) {
             self.beat = (rise * 4.0).clamp(0.35, 1.0);
             self.beat_at = now;
+            self.beats += 1;
         }
         self.bass_avg += (bass - self.bass_avg) * (dt as f64 * 2.5).min(1.0);
         self.bars = v;
@@ -422,6 +446,11 @@ impl Model {
         } else {
             vec![]
         }
+    }
+
+    /// The colour mood: chosen in full-screen mode, else from the config.
+    pub fn mood_name(&self) -> &str {
+        self.mood.as_deref().unwrap_or(self.layout.settings.viz_colors.as_str())
     }
 
     /// The equaliser behind the title is on unless switched off.
@@ -606,6 +635,8 @@ impl Model {
                 (Part::Art, Some(54.0), 0.0),
                 (Part::Viz, None, 1.0),
                 (Part::Preset, Some(72.0), 0.0),
+                (Part::Colors, Some(72.0), 0.0),
+                (Part::Font, Some(72.0), 0.0),
             ]);
             // Only worth a mode button when there's more than one thing to show.
             if self.visualizers().len() > 1 {
@@ -763,7 +794,7 @@ impl Model {
             Hit::Overlay(Part::Prev) => self.key_press(hit, Key::PreviousSong, &mut fx),
             Hit::Overlay(Part::Play) => self.key_press(hit, Key::PlayPause, &mut fx),
             Hit::Overlay(Part::Next) => self.key_press(hit, Key::NextSong, &mut fx),
-            Hit::Overlay(Part::Close | Part::Preset | Part::Mode) => {
+            Hit::Overlay(Part::Close | Part::Preset | Part::Mode | Part::Colors | Part::Font) => {
                 self.press(hit, true);
                 Grab::Press { hit, keys: vec![], act: None, inside: true, tap: None }
             }
@@ -902,8 +933,22 @@ impl Model {
                             Some(m) if m != "bars" => {
                                 fx.push(Effect::Send(Outgoing::PluginCmd { id: m, cmd: "next".into(), x: 0.0 }))
                             }
-                            _ => self.bar_style = (self.bar_style + 1) % BAR_STYLES,
+                            _ => {
+                                self.bar_style = (self.bar_style + 1) % BAR_STYLES;
+                                fx.push(Effect::Send(Outgoing::Set { k: "bar_style".into(), v: self.bar_style as f64 }));
+                            }
                         },
+                        Hit::Overlay(Part::Colors) => {
+                            let cur = MOODS.iter().position(|m| *m == self.mood_name()).unwrap_or(0);
+                            let next = (cur + 1) % MOODS.len();
+                            self.mood = Some(MOODS[next].to_string());
+                            self.prev_palette.clear(); // switch moods instantly, no crossfade
+                            fx.push(Effect::Send(Outgoing::Set { k: "viz_mood".into(), v: next as f64 }));
+                        }
+                        Hit::Overlay(Part::Font) => {
+                            self.text_style = (self.text_style + 1) % TEXT_STYLES;
+                            fx.push(Effect::Send(Outgoing::Set { k: "text_style".into(), v: self.text_style as f64 }));
+                        }
                         Hit::Overlay(Part::Mode) => {
                             let list = self.visualizers();
                             if let Some(v) = &mut self.viz {
