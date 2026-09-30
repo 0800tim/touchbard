@@ -102,6 +102,9 @@ PRESETS = {
     "back": btn(G["back"], w=80, style="subtle", act={"layer": "control"}),
     "brightness": {"kind": "slider", "target": "brightness", "w": 100,
                    "icons": [G["bright_lo"], G["bright_mid"], G["bright_hi"]]},
+    # The Touch Bar's own LED backlight: sets the brightness ceiling (it still
+    # follows the screen, dims when idle and sleeps).
+    "touchbar": {"kind": "slider", "target": "tb_level", "w": 100, "icons": ["\U000F0330"]},
     "keyboard": {"kind": "slider", "target": "keyboard", "w": 100,
                  "icons": [G["kbd_off"], G["kbd"]]},
     "volume": {"kind": "slider", "target": "volume", "w": 100,
@@ -843,6 +846,12 @@ class Agent:
         prefs = load_prefs()
         self.state["eq"] = prefs.get("eq", True)
         self.state["karaoke"] = bool(prefs.get("karaoke", False))
+        # Touch Bar backlight ceiling, 0..1; defaults to the configured max_brightness.
+        try:
+            default_tb = float(load_config().get("settings", {}).get("max_brightness", 160)) / 255
+        except Exception:
+            default_tb = 160 / 255
+        self.state["tb_level"] = float(prefs.get("tb_level", round(default_tb, 3)))
         self.lyrics_key = None
         for k in ("bar_style", "text_style", "viz_mood"):
             if isinstance(prefs.get(k), int):
@@ -982,6 +991,10 @@ class Agent:
             n = int(float(msg["v"]))
             self.state[msg["k"]] = self.sent_state[msg["k"]] = n
             save_prefs({msg["k"]: n})
+        elif t == "set" and msg.get("k") == "tb_level":
+            v = max(0.03, min(1.0, float(msg["v"])))
+            self.state["tb_level"] = self.sent_state["tb_level"] = v
+            save_prefs({"tb_level": round(v, 3)})
         elif t == "set" and msg.get("k") == "karaoke":
             on = float(msg["v"]) > 0.5
             self.state["karaoke"] = self.sent_state["karaoke"] = on

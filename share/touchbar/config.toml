@@ -9,7 +9,7 @@
 #
 # Presets:
 #   esc fn back           escape, the F-key switch, back to the main layer
-#   brightness keyboard volume
+#   brightness keyboard volume touchbar   (touchbar = the Touch Bar's own backlight)
 #                         sliders: tap to open, or press and slide straight away
 #   mute mic              toggles that light up red when muted
 #   media nowplaying      ⏮ ⏯ ⏭ and the current track, with a live spectrum
@@ -86,7 +86,7 @@ items = [
   "eq", "nowplaying",
   "media",
   "gap",
-  "brightness", "keyboard",
+  "brightness", "keyboard", "touchbar",
   "gap",
   "volume", "mute",
 ]

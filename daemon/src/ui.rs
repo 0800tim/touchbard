@@ -24,6 +24,8 @@ pub const BAR_STYLES: u8 = 7;
 pub const MOODS: [&str; 9] = ["music", "mono", "smoke", "amethyst", "matrix", "disco", "rasta", "rainbow", "theme"];
 /// dot matrix, wave, outline, typewriter, scatter, blocks, sparkle, explode
 pub const TEXT_STYLES: u8 = 8;
+/// How long the "No lyrics available" banner takes to sweep past.
+pub const NO_LYRICS_SECS: f64 = 9.0;
 
 /// Something the daemon has to do in response to a touch.
 pub enum Effect {
@@ -149,6 +151,8 @@ pub struct Model {
     pub text_style: u8,
     /// A short message bubble ("Karaoke mode on") and when it appeared.
     pub toast: Option<(String, Instant)>,
+    /// When a karaoke track turned out to have no lyrics: a banner sweeps past once.
+    pub no_lyrics_at: Option<Instant>,
     pub palette_at: Instant,
     /// Set by the renderer while a long title is scrolling, so frames keep coming.
     pub marquee: std::cell::Cell<bool>,
@@ -197,6 +201,7 @@ impl Model {
             mood: None,
             text_style: 0,
             toast: None,
+            no_lyrics_at: None,
             palette_at: now,
             marquee: std::cell::Cell::new(false),
             grabs: HashMap::new(),
@@ -270,6 +275,9 @@ impl Model {
             }
             if k == "position" {
                 self.position_at = now;
+            }
+            if k == "lyrics_status" && v.as_str() == Some("none") && self.state.get(&k) != Some(&v) && self.flag("karaoke") {
+                self.no_lyrics_at = Some(now);
             }
             if k == "palette" && self.state.get("palette") != Some(&v) {
                 self.prev_palette = self.palette();
@@ -463,6 +471,9 @@ impl Model {
         let on = !self.flag("karaoke");
         self.state.insert("karaoke".into(), Value::from(on));
         self.hold.insert("karaoke".into(), now + STATE_HOLD);
+        if on && !self.karaoke_active() && self.text("lyrics_status") == Some("none") {
+            self.no_lyrics_at = Some(now);
+        }
         let msg = match (on, self.karaoke_active(), self.text("lyrics_status")) {
             (false, ..) => "Karaoke mode off",
             (true, true, _) => "Karaoke mode on",
@@ -501,6 +512,12 @@ impl Model {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Seconds into the "No lyrics available" banner, while it's sweeping past.
+    pub fn no_lyrics_banner(&self, now: Instant) -> Option<f64> {
+        let t = (now - self.no_lyrics_at?).as_secs_f64();
+        (t < NO_LYRICS_SECS && self.flag("karaoke")).then_some(t)
     }
 
     /// Karaoke is showing: switched on, and this track has lyrics.
@@ -627,6 +644,7 @@ impl Model {
             || (self.viz.is_some() && self.flag("playing"))
             || self.marquee.get()
             || self.toast.is_some()
+            || self.no_lyrics_banner(now).is_some()
             || (self.karaoke_active() && self.flag("playing"))
             || self.surfaces.values().any(|(_, t)| now - *t < PIXELS_STALE)
     }

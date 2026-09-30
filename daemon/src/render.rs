@@ -339,7 +339,19 @@ fn draw_item(m: &Model, p: &Painter, pal: &Palette, it: &Item, n: usize, x: f64,
                 p.text(note, 30.0, false, start + nw / 2.0, cy, None);
             }
             let tx = start + nw + 10.0;
-            if m.karaoke_active() {
+            if let Some(bt) = m.no_lyrics_banner(now) {
+                // The condensed bar: the same message, one quiet pass.
+                let msg = "No lyrics available";
+                let mw = p.text_width(msg, LABEL_PX, true);
+                let (ax, aw) = (x + nw + 24.0, w - nw - 34.0);
+                let mx = ax + aw - (bt / NO_LYRICS_SECS) * (aw + mw);
+                c.save().unwrap();
+                c.rectangle(ax, 0.0, aw, m.h);
+                c.clip();
+                pal.fg_dim.set(c);
+                p.text(msg, LABEL_PX, true, mx + mw / 2.0, cy, None);
+                c.restore().unwrap();
+            } else if m.karaoke_active() {
                 m.marquee.set(m.flag("playing"));
                 draw_lyrics(m, p, pal, x + nw + 24.0, w - nw - 34.0, cy, LABEL_PX, false, now);
             } else if scrolling {
@@ -731,7 +743,7 @@ fn draw_viz(m: &Model, p: &Painter, pal: &Palette, v: &VizOverlay, now: Instant)
             Part::Prev => button("󰒮", pal.fg),
             Part::Play => button(if playing { "󰏤" } else { "󰐊" }, pal.accent),
             Part::Next => button("󰒭", pal.fg),
-            Part::Preset => button("󰑓", pal.fg),
+            Part::Preset => draw_wand_button(m, p, pal, x, w, pl, now),
             Part::Colors => {
                 // The palette icon wears the current mood's colours.
                 p.pill(x, w, pal.surface.mix(pal.accent, 0.45 * pl));
@@ -746,7 +758,7 @@ fn draw_viz(m: &Model, p: &Painter, pal: &Palette, v: &VizOverlay, now: Instant)
                 p.text("\u{F03D8}", ICON_PX, false, x + w / 2.0, m.h / 2.0, None);
                 c.new_path();
             }
-            Part::Font => button("Aa", pal.fg),
+            Part::Font => draw_font_button(m, p, pal, x, w, pl, now),
             Part::Volume => {
                 // The speaker shows the level; lit while its control is open.
                 let open = v.volume.is_some();
@@ -823,6 +835,8 @@ fn draw_viz(m: &Model, p: &Painter, pal: &Palette, v: &VizOverlay, now: Instant)
                 });
                 if v.volume.is_some() {
                     draw_volume_over(m, p, pal, x, w, y, h, now);
+                } else if let Some(bt) = m.no_lyrics_banner(now) {
+                    draw_no_lyrics(m, pal, c, x + 10.0, w - 20.0 - time_w, y + h / 2.0, bt, now);
                 } else if m.karaoke_active() {
                     draw_lyrics(m, p, pal, x + 10.0, w - 20.0 - time_w, y + h / 2.0, 30.0, true, now);
                 } else if !label.is_empty() {
@@ -2298,4 +2312,148 @@ fn draw_explode_line(m: &Model, pal: &Palette, c: &Context, line: &str, lx: f64,
             explode_letter(m, pal, c, ch, x, top, cell, i, t, burst, 1.0);
         }
     }
+}
+
+/// The style button: a magic wand in the mood's shifting colours, with
+/// little sparkles twinkling around it.
+fn draw_wand_button(m: &Model, p: &Painter, pal: &Palette, x: f64, w: f64, pl: f64, now: Instant) {
+    let c = p.c;
+    p.pill(x, w, pal.surface.mix(pal.accent, 0.45 * pl));
+    let t = (now - m.epoch).as_secs_f64();
+    let g = LinearGradient::new(x + 16.0, 0.0, x + w - 16.0, 0.0);
+    for k in 0..=4 {
+        let f = k as f64 / 4.0;
+        let col = viz_color(m, pal, f * 0.8 + t * 0.05 + 0.3, 0.85, 1.0);
+        g.add_color_stop_rgb(f, col.0, col.1, col.2);
+    }
+    c.set_source(&g).unwrap();
+    p.text("\u{F0068}", ICON_PX * 0.9, false, x + w / 2.0, m.h / 2.0, None);
+    c.new_path();
+    // Three four-point sparkles, each on its own twinkle.
+    for (k, (sx, sy, r)) in [(0.78, 0.26, 5.0), (0.22, 0.72, 3.5), (0.84, 0.74, 3.0)].iter().enumerate() {
+        let tw = 0.5 + 0.5 * (t * (2.3 + k as f64 * 0.9) + k as f64 * 2.1).sin();
+        let r = r * (0.6 + 0.4 * tw);
+        let (cx, cy) = (x + w * sx, m.h * sy);
+        let col = viz_color(m, pal, t * 0.07 + k as f64 * 0.3, 0.6, 1.0).mix(Rgb(1.0, 1.0, 1.0), 0.4);
+        c.set_source_rgba(col.0, col.1, col.2, 0.35 + 0.65 * tw);
+        c.move_to(cx, cy - r);
+        c.line_to(cx + r * 0.28, cy - r * 0.28);
+        c.line_to(cx + r, cy);
+        c.line_to(cx + r * 0.28, cy + r * 0.28);
+        c.line_to(cx, cy + r);
+        c.line_to(cx - r * 0.28, cy + r * 0.28);
+        c.line_to(cx - r, cy);
+        c.line_to(cx - r * 0.28, cy - r * 0.28);
+        c.close_path();
+        c.fill().unwrap();
+    }
+}
+
+/// The text-style button: a tiny live "Aa" in the current text style and mood.
+fn draw_font_button(m: &Model, p: &Painter, pal: &Palette, x: f64, w: f64, pl: f64, now: Instant) {
+    let c = p.c;
+    p.pill(x, w, pal.surface.mix(pal.accent, 0.45 * pl));
+    let t = (now - m.epoch).as_secs_f64();
+    let cy = m.h / 2.0;
+    let colour = |f: f64| viz_color(m, pal, f * 0.6 + t * 0.06, 0.85, 1.0).mix(Rgb(1.0, 1.0, 1.0), title_lift(m, 0.15));
+    let style = m.text_style;
+    if matches!(style, 0 | 3 | 5 | 6 | 7) {
+        // Pixel styles: "Aa" on the dot grid.
+        let cell = 3.6;
+        let adv = glyph_advance(style) * cell;
+        let (x0, top) = (x + (w - 2.0 * adv + cell) / 2.0, cy - 3.5 * cell);
+        for (i, ch) in ['A', 'a'].into_iter().enumerate() {
+            let lx = x0 + i as f64 * adv;
+            let col = colour(i as f64 * 0.5);
+            match style {
+                0 => {
+                    let g = glyph_5x7(ch).unwrap();
+                    c.set_source_rgb(col.0, col.1, col.2);
+                    for (cx, byte) in g.iter().enumerate() {
+                        for row in 0..7 {
+                            if byte >> row & 1 == 1 {
+                                c.new_sub_path(); // separate dots, not joined by lines
+                                c.arc(lx + cx as f64 * cell + 1.5, top + row as f64 * cell + 1.5, 1.3, 0.0, 2.0 * PI);
+                            }
+                        }
+                    }
+                    c.fill().unwrap();
+                }
+                6 => sparkle_letter(m, pal, c, ch, lx, top, cell, i, t, now, 1.0),
+                7 => {
+                    sparkle_letter(m, pal, c, ch, lx, top, cell, i, t, now, 1.0);
+                    // A few sparks flying off, looping.
+                    for k in 0..4 {
+                        let ph = (t * 0.8 + k as f64 * 0.25 + i as f64 * 0.5).fract();
+                        let ang = hash01(k as f64, i as f64) * 2.0 * PI;
+                        let (sx, sy) = (lx + 9.0 + ang.cos() * 16.0 * ph, cy + ang.sin() * 12.0 * ph + 6.0 * ph * ph);
+                        let col = colour(k as f64 * 0.25);
+                        c.set_source_rgba(col.0, col.1, col.2, 1.0 - ph);
+                        c.rectangle(sx, sy, 2.2 * (1.0 - ph) + 0.6, 2.2 * (1.0 - ph) + 0.6);
+                        c.fill().unwrap();
+                    }
+                }
+                _ => pixel_letter(c, ch, lx, top, cell, col, 1.0),
+            }
+        }
+        return;
+    }
+    // Font styles: smooth letters, hollow for the outline style.
+    let size = if style == 2 { 32.0 } else { 28.0 };
+    let aw = p.text_width("A", size, true);
+    let bw = p.text_width("a", size, true);
+    let x0 = x + (w - aw - bw) / 2.0;
+    for (i, (ch, cw, ox)) in [("A", aw, 0.0), ("a", bw, aw)].into_iter().enumerate() {
+        let col = colour(i as f64 * 0.5);
+        let dy = match style {
+            1 => (t * 3.2 + i as f64 * 1.4).sin() * 2.0,
+            4 => (t * 0.9 + i as f64 * 2.0).cos() * 2.0,
+            _ => 0.0,
+        };
+        let cx = x0 + ox + cw / 2.0;
+        if style == 2 {
+            let l = p.layout(ch, size, true);
+            let (_, ext) = l.pixel_extents();
+            c.move_to(cx - ext.width() as f64 / 2.0, cy - ext.height() as f64 / 2.0);
+            pangocairo::functions::layout_path(c, &l);
+            c.set_source_rgb(col.0, col.1, col.2);
+            c.set_line_width(1.3);
+            c.stroke().unwrap();
+        } else {
+            col.set(c);
+            p.text(ch, size, true, cx, cy + dy, None);
+        }
+    }
+}
+
+/// "No lyrics available", sweeping past once in big sparkly block letters
+/// whatever the text style: glittering as they travel, bursting into sparks
+/// as they reach the left edge.
+#[allow(clippy::too_many_arguments)]
+fn draw_no_lyrics(m: &Model, pal: &Palette, c: &Context, x: f64, w: f64, cy: f64, bt: f64, now: Instant) {
+    let msg = "No lyrics available";
+    let cell = 6.0;
+    let adv = 7.0 * cell;
+    let text_w = msg.chars().count() as f64 * adv;
+    let t = (now - m.epoch).as_secs_f64();
+    // Right edge to fully past the left edge over the banner's lifetime.
+    let start = x + w - (bt / NO_LYRICS_SECS) * (w + text_w + 160.0);
+    let top = cy - 3.5 * cell;
+    c.save().unwrap();
+    c.rectangle(x, cy - m.h / 2.0, w, m.h);
+    c.clip();
+    for (i, ch) in msg.chars().enumerate() {
+        let lx = start + i as f64 * adv;
+        if ch.is_whitespace() || lx > x + w || lx + adv < x - 160.0 {
+            continue;
+        }
+        // Letters dissolve as they cross into the last stretch on the left.
+        let burst = ((x + 120.0 - lx) / 160.0).clamp(0.0, 1.0);
+        if burst > 0.0 {
+            explode_letter(m, pal, c, ch, lx, top, cell, i, t, burst, 1.0);
+        } else {
+            sparkle_letter(m, pal, c, ch, lx, top, cell, i, t, now, 1.0);
+        }
+    }
+    c.restore().unwrap();
 }

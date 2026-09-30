@@ -216,7 +216,9 @@ fn run() -> Result<()> {
         }
         let idle = now - last_activity;
         let display = backlight.display_level();
-        let full = ((s.max_brightness as f64) * display.sqrt()).round().max(1.0) as u32;
+        // The ceiling: the Touch Bar brightness slider when set, else the config.
+        let ceiling = model.num("tb_level").map_or(s.max_brightness as f64, |v| v.clamp(0.03, 1.0) * 255.0);
+        let full = (ceiling * display.sqrt()).round().max(1.0) as u32;
         let target = if lid_closed || display <= 0.0 || idle > Duration::from_secs(s.off_after) {
             0
         } else if idle > Duration::from_secs(s.dim_after) {
@@ -545,6 +547,7 @@ fn preview(args: &[String]) -> Result<()> {
             }
             "style" => model.bar_style = v.parse()?,
             "text" => model.text_style = v.parse()?,
+            "nolyrics" => model.no_lyrics_at = Some(Instant::now() - Duration::from_secs_f64(v.parse()?)),
             "toast" => model.toast = Some((v.to_string(), Instant::now() - Duration::from_millis(400))),
             "mood" => model.mood = Some(v.to_string()),
             "volumeui" => {
