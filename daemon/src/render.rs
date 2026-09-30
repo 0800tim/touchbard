@@ -809,7 +809,7 @@ fn draw_viz(m: &Model, p: &Painter, pal: &Palette, v: &VizOverlay, now: Instant)
                     draw_lyrics(m, p, pal, x + 10.0, w - 20.0 - time_w, y + h / 2.0, 30.0, true, now);
                 } else if !label.is_empty() {
                     match m.text_style {
-                        1..=5 => draw_letter_title(m, p, pal, &label, x + 10.0, w - 20.0 - time_w, y, h, now),
+                        1..=6 => draw_letter_title(m, p, pal, &label, x + 10.0, w - 20.0 - time_w, y, h, now),
                         _ => draw_dot_title(m, pal, c, &label, x + 10.0, w - 20.0 - time_w, y, h, now),
                     }
                 }
@@ -1739,13 +1739,13 @@ fn draw_letter_title(m: &Model, p: &Painter, pal: &Palette, text: &str, x: f64, 
     let (px, cell) = match style {
         2 => (46.0, 0.0),
         3 => (0.0, 4.0),
-        5 => (0.0, 6.0),
+        5 | 6 => (0.0, 6.0),
         _ => (34.0, 0.0),
     };
     let pixel = cell > 0.0;
     let widths: Vec<f64> = chars
         .iter()
-        .map(|ch| if pixel { 6.0 * cell } else { p.text_width(&ch.to_string(), px, true).max(px * 0.3) })
+        .map(|ch| if pixel { glyph_advance(style) * cell } else { p.text_width(&ch.to_string(), px, true).max(px * 0.3) })
         .collect();
     let total: f64 = widths.iter().sum();
     let gap = 70.0;
@@ -1824,6 +1824,7 @@ fn draw_letter_title(m: &Model, p: &Painter, pal: &Palette, text: &str, x: f64, 
                     c.set_source_rgba(col.0, col.1, col.2, a);
                     p.text(&s, px, true, lx + lw / 2.0 + dx, cy + dy, None);
                 }
+                6 => sparkle_letter(m, pal, c, *ch, lx, cy - 3.5 * cell, cell, i, t, now, 1.0),
                 _ => {
                     // blocks: chunky pixels; letters light up in sequence on each beat
                     let seq = (m.beats as usize) % n.max(1);
@@ -1976,7 +1977,7 @@ fn char_width(p: &Painter, ch: char, px: f64) -> f64 {
 /// Pixel size of the 5x7 lyric styles, or None for the font-based ones.
 fn lyric_cell(style: u8) -> Option<f64> {
     match style {
-        0 | 5 => Some(6.0),
+        0 | 5 | 6 => Some(6.0),
         3 => Some(5.0),
         _ => None,
     }
@@ -1993,7 +1994,7 @@ fn lyric_width(m: &Model, p: &Painter, line: &str, px: f64, full: bool) -> f64 {
         return p.text_width(line, px, true);
     }
     match lyric_cell(m.text_style) {
-        Some(cell) => line.chars().count() as f64 * 6.0 * cell,
+        Some(cell) => line.chars().count() as f64 * glyph_advance(m.text_style) * cell,
         None if m.text_style == 2 => p.text_width(line, lyric_px(2), true),
         None => line.chars().map(|ch| char_width(p, ch, lyric_px(m.text_style))).sum(),
     }
@@ -2014,7 +2015,7 @@ fn lyric_draw(m: &Model, p: &Painter, line: &str, lx: f64, cy: f64, px: f64, ful
     if let Some(cell) = lyric_cell(style) {
         let top = cy - 3.5 * cell;
         for (i, ch) in line.chars().enumerate() {
-            let x = lx + i as f64 * 6.0 * cell;
+            let x = lx + i as f64 * glyph_advance(style) * cell;
             if style == 0 {
                 // big rounded dots, the dot matrix
                 let g = glyph_5x7(ch).unwrap_or_else(|| glyph_5x7('?').unwrap());
@@ -2029,6 +2030,13 @@ fn lyric_draw(m: &Model, p: &Painter, line: &str, lx: f64, cy: f64, px: f64, ful
                     }
                 }
                 c.fill().unwrap();
+            } else if style == 6 {
+                // Sparkle while it's being sung; a quiet thick outline of itself otherwise.
+                if lively && alpha >= 1.0 {
+                    sparkle_letter(m, &Palette::from(&m.theme), c, ch, x, top, cell, i, t, Instant::now(), 1.0);
+                } else {
+                    thick_letter(c, ch, x, top, cell, col, alpha);
+                }
             } else {
                 pixel_letter(c, ch, x, top, cell, col, alpha);
             }
@@ -2065,5 +2073,78 @@ fn lyric_draw(m: &Model, p: &Painter, line: &str, lx: f64, cy: f64, px: f64, ful
             p.text(&ch.to_string(), size, true, x + cw / 2.0 + dx, cy + dy, None);
         }
         x += cw;
+    }
+}
+
+/// Columns per character on the pixel grid: 5x7 glyphs plus a gap, or the
+/// sparkle style's thickened 6x7 plus a gap.
+fn glyph_advance(style: u8) -> f64 {
+    if style == 6 { 7.0 } else { 6.0 }
+}
+
+/// A 5x7 glyph thickened to 6x7: every stroke two pixels wide.
+fn thick_glyph(ch: char) -> [u8; 6] {
+    let g = glyph_5x7(ch).unwrap_or_else(|| glyph_5x7('?').unwrap());
+    let mut out = [0u8; 6];
+    for i in 0..6 {
+        out[i] = g.get(i).copied().unwrap_or(0) | if i > 0 { g[i - 1] } else { 0 };
+    }
+    out
+}
+
+fn thick_letter(c: &Context, ch: char, x: f64, top: f64, cell: f64, col: Rgb, alpha: f64) {
+    c.set_source_rgba(col.0, col.1, col.2, alpha);
+    for (cx, byte) in thick_glyph(ch).iter().enumerate() {
+        for row in 0..7 {
+            if byte >> row & 1 == 1 {
+                c.rectangle(x + cx as f64 * cell, top + row as f64 * cell, cell - 1.0, cell - 1.0);
+            }
+        }
+    }
+    c.fill().unwrap();
+}
+
+/// Cheap, stable per-pixel noise in 0..1.
+fn hash01(a: f64, b: f64) -> f64 {
+    ((a * 12.9898 + b * 78.233).sin() * 43758.5453).rem_euclid(1.0)
+}
+
+/// Sparkle: a thick block letter where every pixel twinkles at its own
+/// speed, cycles quickly through the mood's colours, now and then flashes
+/// white like glitter, and lights up as each beat's wave flows through.
+#[allow(clippy::too_many_arguments)]
+fn sparkle_letter(m: &Model, pal: &Palette, c: &Context, ch: char, x: f64, top: f64, cell: f64, index: usize, t: f64, now: Instant, alpha: f64) {
+    // The beat wave: a bright front running left to right from each hit.
+    let since = (now - m.beat_at).as_secs_f64();
+    let front = since * 900.0;
+    let wave_on = m.flag("playing") && since < 2.5;
+    let d = cell - 1.0;
+    for (cx, byte) in thick_glyph(ch).iter().enumerate() {
+        let col_i = (index * 7 + cx) as f64;
+        for row in 0..7 {
+            if byte >> row & 1 == 0 {
+                continue;
+            }
+            let rf = row as f64;
+            let h = hash01(col_i, rf);
+            let px = x + cx as f64 * cell;
+            let py = top + rf * cell;
+            // Each pixel twinkles on its own clock.
+            // Bright range only, so letters stay solid while they shimmer.
+            let twinkle = 0.78 + 0.22 * (t * (5.0 + h * 9.0) + h * 20.0).sin();
+            // How close the beat wave is (in screen x from the bar's left edge).
+            let near = if wave_on { (1.0 - ((px - front).abs() / 60.0)).clamp(0.0, 1.0) * (1.0 - since / 2.5) } else { 0.0 };
+            let hue = col_i * 0.013 + t * 0.35 + h * 0.18 + near * 0.25;
+            let mut col = viz_color(m, pal, hue, 0.9, (twinkle + 0.4 * near).min(1.0));
+            // Glitter: a few pixels flash white each moment.
+            if hash01(col_i + (t * 12.0).floor(), rf * 3.1) > 0.965 {
+                col = col.mix(Rgb(1.0, 1.0, 1.0), 0.85);
+            }
+            col = col.mix(Rgb(1.0, 1.0, 1.0), (0.45 * near).max(title_lift(m, 0.12)));
+            let lift = 2.0 * near;
+            c.set_source_rgba(col.0, col.1, col.2, alpha);
+            c.rectangle(px, py - lift, d, d);
+            c.fill().unwrap();
+        }
     }
 }

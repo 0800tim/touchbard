@@ -22,8 +22,8 @@ pub const PIXELS_STALE: Duration = Duration::from_millis(1500);
 pub const BAR_STYLES: u8 = 7;
 /// Colour moods for the visualisers, in the order the mood button cycles.
 pub const MOODS: [&str; 8] = ["music", "mono", "smoke", "amethyst", "matrix", "disco", "rainbow", "theme"];
-/// dot matrix, wave, outline, typewriter, scatter, blocks
-pub const TEXT_STYLES: u8 = 6;
+/// dot matrix, wave, outline, typewriter, scatter, blocks, sparkle
+pub const TEXT_STYLES: u8 = 7;
 
 /// Something the daemon has to do in response to a touch.
 pub enum Effect {
