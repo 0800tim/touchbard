@@ -6,6 +6,10 @@ Play anything on **Spotify, YouTube Music, YouTube, [fm.video](https://fm.video)
 
 ![Karaoke lyrics exploding into sparks](docs/hero.png)
 
+**🎬 See it running** (a real recording, made with `touchbar-agent record`; click for the full clip with sound):
+
+[![touchbard demo](docs/demo.gif)](docs/demo.mp4)
+
 It's a full Touch Bar too, with sliders, weather, F-keys and a Touch ID prompt, for Apple Touch Bar MacBooks running Linux. It has first-class support for [Omarchy](https://omarchy.org) and Hyprland.
 
 ## 🎶 The music player
