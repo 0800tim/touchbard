@@ -18,7 +18,8 @@ pub const FP_FADE_OUT: Duration = Duration::from_millis(280);
 const BARS_STALE: Duration = Duration::from_millis(400);
 /// Plugin frames older than this are treated as gone.
 pub const PIXELS_STALE: Duration = Duration::from_millis(1500);
-pub const BAR_STYLES: u8 = 3;
+/// mirror, floor+peaks, dots, ripple, aurora, pixels, comet
+pub const BAR_STYLES: u8 = 7;
 
 /// Something the daemon has to do in response to a touch.
 pub enum Effect {
@@ -117,6 +118,8 @@ pub struct Model {
     pub position_at: Instant,
     /// When the track title last changed: the marquee starts from its head.
     pub title_since: Instant,
+    /// Clock for the visualisers' own motion.
+    pub epoch: Instant,
     /// Set by the renderer while a long title is scrolling, so frames keep coming.
     pub marquee: std::cell::Cell<bool>,
     grabs: HashMap<u32, Grab>,
@@ -155,6 +158,7 @@ impl Model {
             surfaces: HashMap::new(),
             position_at: now,
             title_since: now,
+            epoch: now,
             marquee: std::cell::Cell::new(false),
             grabs: HashMap::new(),
             hold: HashMap::new(),

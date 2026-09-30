@@ -19,7 +19,7 @@ A themed, macOS-style Touch Bar for Apple Touch Bar MacBooks running Linux. It h
 
   ![Touch ID](docs/touchid.png)
 
-- **Music:** a live equaliser ([cava](https://github.com/karlstav/cava)) or the album cover behind the track title, with a button to switch the equaliser off. Tap the title for a full-width equaliser with a drag-to-seek scrubber, via MPRIS, so it works with any player.
+- **Music:** a live equaliser ([cava](https://github.com/karlstav/cava)) or the album cover behind the track title, with a button to switch the equaliser off. Tap the title for a full-width equaliser (seven styles: mirrored bars, peaks, dots, rainbow ripples, aurora waves, an LED pixel matrix and a smoky rainbow comet) with a drag-to-seek scrubber, via MPRIS, so it works with any player.
 
   ![Equaliser](docs/equaliser.png)
 

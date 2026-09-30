@@ -623,6 +623,14 @@ pub fn draw_bars(m: &Model, c: &Context, pal: &Palette, x: f64, y: f64, w: f64, 
     if src.is_empty() {
         return;
     }
+    let t = (Instant::now() - m.epoch).as_secs_f64();
+    match style {
+        3 => return draw_ripple(m, c, x, y, w, h, t, alpha),
+        4 => return draw_aurora(m, c, x, y, w, h, t, alpha),
+        5 => return draw_pixels(m, c, x, y, w, h, t, alpha),
+        6 => return draw_smoke_bars(m, c, x, y, w, h, t, alpha),
+        _ => {}
+    }
     // Fewer, fatter bars on narrow areas.
     let n = ((w / 14.0) as usize).clamp(8, src.len());
     let bw = w / n as f64;
@@ -1030,4 +1038,181 @@ fn draw_comet(m: &Model, c: &Context, x0: f64, cy: f64, t: f64) {
         rounded(c, x0 + i as f64 * step, cy - bh / 2.0, bw, bh, bw / 2.0);
         c.fill().unwrap();
     }
+}
+
+/// Spectrum level at `f` (0..1 across the bands), linearly interpolated and
+/// lightly smoothed, for visuals that want a continuous curve.
+fn level_at(bars: &[f32], f: f64) -> f64 {
+    if bars.is_empty() {
+        return 0.0;
+    }
+    let n = bars.len();
+    let pos = f.clamp(0.0, 1.0) * (n - 1) as f64;
+    let i = pos.floor() as usize;
+    let frac = pos - i as f64;
+    let get = |k: isize| bars[k.clamp(0, n as isize - 1) as usize] as f64;
+    let a = (get(i as isize - 1) + 2.0 * get(i as isize) + get(i as isize + 1)) / 4.0;
+    let b = (get(i as isize) + 2.0 * get(i as isize + 1) + get(i as isize + 2)) / 4.0;
+    (a + (b - a) * frac).clamp(0.0, 1.0)
+}
+
+/// Average energy over a band range.
+fn band(bars: &[f32], from: f64, to: f64) -> f64 {
+    if bars.is_empty() {
+        return 0.0;
+    }
+    let n = bars.len();
+    let (a, b) = ((from * n as f64) as usize, ((to * n as f64) as usize).max((from * n as f64) as usize + 1).min(n));
+    bars[a..b].iter().map(|v| *v as f64).sum::<f64>() / (b - a) as f64
+}
+
+/// Rainbow rings spreading like ripples on water, each source pulsing with
+/// its slice of the spectrum.
+#[allow(clippy::too_many_arguments)]
+fn draw_ripple(m: &Model, c: &Context, x: f64, y: f64, w: f64, h: f64, t: f64, alpha: f64) {
+    let sources = 5;
+    let cy = y + h / 2.0;
+    c.save().unwrap();
+    c.rectangle(x, y, w, h);
+    c.clip();
+    for i in 0..sources {
+        let fi = i as f64 / (sources - 1) as f64;
+        let e = band(&m.bars, fi * 0.8, fi * 0.8 + 0.2);
+        let sx = x + w * (0.1 + 0.8 * fi) + (t * 0.4 + i as f64).sin() * 18.0;
+        let reach = w / sources as f64 * 1.3;
+        for k in 0..5 {
+            let phase = (t * (0.45 + 0.1 * fi) + k as f64 / 5.0 + i as f64 * 0.17).fract();
+            let r = 6.0 + phase * reach * (0.5 + 0.8 * e);
+            let a = (1.0 - phase).powf(1.6) * (0.25 + 0.9 * e) * alpha;
+            let col = hsv((fi * 0.8 + t * 0.05 + phase * 0.35).fract(), 0.75, 1.0);
+            c.set_source_rgba(col.0, col.1, col.2, a.min(1.0));
+            c.set_line_width(1.5 + 4.0 * e * (1.0 - phase));
+            c.save().unwrap();
+            c.translate(sx, cy);
+            c.scale(1.0, 0.34); // water seen at a low angle
+            c.arc(0.0, 0.0, r, 0.0, 2.0 * PI);
+            c.restore().unwrap();
+            c.stroke().unwrap();
+        }
+        // A bright drop at each source.
+        let col = hsv((fi * 0.8 + t * 0.05).fract(), 0.6, 1.0);
+        let g = cairo::RadialGradient::new(sx, cy, 0.0, sx, cy, 6.0 + 16.0 * e);
+        g.add_color_stop_rgba(0.0, col.0, col.1, col.2, 0.9 * alpha);
+        g.add_color_stop_rgba(1.0, col.0, col.1, col.2, 0.0);
+        c.set_source(&g).unwrap();
+        c.arc(sx, cy, 6.0 + 16.0 * e, 0.0, 2.0 * PI);
+        c.fill().unwrap();
+    }
+    c.restore().unwrap();
+}
+
+/// Layers of smooth, translucent rainbow waves flowing across the bar.
+#[allow(clippy::too_many_arguments)]
+fn draw_aurora(m: &Model, c: &Context, x: f64, y: f64, w: f64, h: f64, t: f64, alpha: f64) {
+    let cy = y + h / 2.0;
+    let steps = (w / 8.0) as usize;
+    c.save().unwrap();
+    c.rectangle(x, y, w, h);
+    c.clip();
+    for layer in 0..3 {
+        let lf = layer as f64;
+        let speed = 0.35 + 0.25 * lf;
+        let amp = h * (0.48 - 0.1 * lf);
+        let curve = |i: usize| -> (f64, f64) {
+            let f = i as f64 / steps as f64;
+            let spectrum = level_at(&m.bars, f * 0.86 + lf * 0.07);
+            let wave = (f * (5.0 + lf * 2.0) * PI + t * speed * 2.0 * PI).sin() * 0.18
+                + (f * 13.0 * PI - t * 1.1).sin() * 0.07;
+            (x + f * w, (spectrum * 0.75 + 0.28 + wave).clamp(0.06, 1.0) * amp)
+        };
+        // A closed band: the upper edge left to right, the mirrored lower edge back.
+        c.new_path();
+        for i in 0..=steps {
+            let (px, a) = curve(i);
+            c.line_to(px, cy - a);
+        }
+        for i in (0..=steps).rev() {
+            let (px, a) = curve(i);
+            c.line_to(px, cy + a * 0.8);
+        }
+        c.close_path();
+        let g = LinearGradient::new(x, 0.0, x + w, 0.0);
+        for s in 0..=6 {
+            let f = s as f64 / 6.0;
+            let col = hsv((f * 0.9 + t * 0.04 + lf * 0.23).fract(), 0.7, 1.0);
+            g.add_color_stop_rgba(f, col.0, col.1, col.2, (0.42 - 0.08 * lf) * alpha);
+        }
+        c.set_source(&g).unwrap();
+        c.fill().unwrap();
+    }
+    c.restore().unwrap();
+}
+
+/// An LED matrix in the style of Omarchy's screensaver: square pixels lit in
+/// rainbow gradients, with falling peak pixels over a faint grid.
+#[allow(clippy::too_many_arguments)]
+fn draw_pixels(m: &Model, c: &Context, x: f64, y: f64, w: f64, h: f64, t: f64, alpha: f64) {
+    let cell = 7.0;
+    let rows = (h / cell).floor().max(1.0) as usize;
+    let cols = (w / cell).floor().max(1.0) as usize;
+    let oy = y + (h - rows as f64 * cell) / 2.0;
+    for col in 0..cols {
+        let f = col as f64 / cols as f64;
+        let level = level_at(&m.bars, f);
+        let peak = level_at(&m.peaks, f);
+        let lit = (level * rows as f64).round() as usize;
+        let peak_row = ((peak * rows as f64).round() as usize).min(rows);
+        let px = x + col as f64 * cell;
+        for r in 0..rows {
+            let py = oy + (rows - 1 - r) as f64 * cell;
+            let (rgb, a) = if r < lit {
+                let v = 0.55 + 0.45 * (r as f64 / rows as f64);
+                (hsv((f * 0.9 + t * 0.06 - r as f64 * 0.02).fract(), 0.8, v), 1.0)
+            } else if r + 1 == peak_row && peak_row > lit {
+                (hsv((f * 0.9 + t * 0.06).fract(), 0.25, 1.0), 0.85)
+            } else {
+                (Rgb(1.0, 1.0, 1.0), 0.05)
+            };
+            c.set_source_rgba(rgb.0, rgb.1, rgb.2, a * alpha);
+            c.rectangle(px + 0.5, py + 0.5, cell - 1.5, cell - 1.5);
+            c.fill().unwrap();
+        }
+    }
+}
+
+/// The marquee's comet, full width: rainbow bars over billowing smoke.
+#[allow(clippy::too_many_arguments)]
+fn draw_smoke_bars(m: &Model, c: &Context, x: f64, y: f64, w: f64, h: f64, t: f64, alpha: f64) {
+    let cy = y + h / 2.0;
+    c.save().unwrap();
+    c.rectangle(x, y, w, h);
+    c.clip();
+    let puffs = (w / 46.0) as usize;
+    for j in 0..puffs {
+        let f = (j as f64 + 0.5) / puffs as f64;
+        let e = level_at(&m.bars, f);
+        let px = x + f * w + (t * 0.8 + j as f64 * 1.9).sin() * 12.0;
+        let py = cy + (t * 0.6 + j as f64 * 2.7).sin() * 7.0;
+        let r = 14.0 + 34.0 * e;
+        let col = hsv((f * 0.85 + t * 0.05 + 0.5).fract(), 0.7, 1.0);
+        let g = cairo::RadialGradient::new(px, py, 0.0, px, py, r);
+        g.add_color_stop_rgba(0.0, col.0, col.1, col.2, (0.26 + 0.45 * e) * alpha);
+        g.add_color_stop_rgba(1.0, col.0, col.1, col.2, 0.0);
+        c.set_source(&g).unwrap();
+        c.arc(px, py, r, 0.0, 2.0 * PI);
+        c.fill().unwrap();
+    }
+    let n = (w / 11.0) as usize;
+    let step = w / n as f64;
+    for i in 0..n {
+        let f = i as f64 / n as f64;
+        let e = level_at(&m.bars, f);
+        let bh = ((0.12 + 0.88 * e) * h).max(3.0);
+        let col = hsv((f * 0.85 + t * 0.12).fract(), 0.78, 1.0);
+        c.set_source_rgba(col.0, col.1, col.2, 0.92 * alpha);
+        let bw = step * 0.6;
+        rounded(c, x + i as f64 * step + (step - bw) / 2.0, cy - bh / 2.0, bw, bh, bw / 2.0);
+        c.fill().unwrap();
+    }
+    c.restore().unwrap();
 }
