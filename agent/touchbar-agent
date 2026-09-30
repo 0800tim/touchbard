@@ -113,6 +113,8 @@ PRESETS = {
     "nowplaying": {"kind": "nowplaying", "act": "visualizer"},
     "visualizer": btn("󰺢", w=84, act="visualizer"),
     "weather": {"kind": "weather", "w": 290, "act": "weather"},
+    "karaoke": btn("\U000F036C", w=84, style="plain", act={"toggle_flag": "karaoke"}, toggle="karaoke",
+                   style_on="subtle"),
     "eq": btn("󰺢", w=72, style="plain", act={"toggle_flag": "eq"}, toggle="eq", style_on="subtle"),
     "workspaces": {"kind": "workspaces", "w": 300, "style": "plain",
                    "act": {"cmd": "hyprctl eval 'hl.dispatch(hl.dsp.focus({ workspace = \"{id}\" }))'"}},
@@ -599,6 +601,97 @@ def read_ppm(data):
     return w, h, data[pos + 1:pos + 1 + w * h * 3]
 
 
+# ---------------------------------------------------------------------------
+# Lyrics (LRCLIB, the same free source fm.video uses)
+# ---------------------------------------------------------------------------
+
+LRCLIB = "https://lrclib.net/api"
+LYRICS_CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "touchbar" / "lyrics"
+
+
+def parse_lrc(lrc):
+    """[[seconds, line], ...] from LRC text, sorted; skips tags and empty lines."""
+    out = []
+    stamp = re.compile(r"\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]")
+    for raw in (lrc or "").splitlines():
+        times, end = [], 0
+        for mt in stamp.finditer(raw):
+            if mt.start() != end:
+                break
+            frac = mt.group(3) or ""
+            times.append(int(mt.group(1)) * 60 + int(mt.group(2)) + (int(frac) / 10 ** len(frac) if frac else 0))
+            end = mt.end()
+        line = raw[end:].strip()
+        if times and line:
+            out += [[round(t, 2), line] for t in times]
+    return sorted(out, key=lambda x: x[0])
+
+
+def clean_track(title, artist):
+    """YouTube-style titles to what a lyrics database knows: drop '(Official
+    Video)', '[Lyrics]', 'feat. X' and friends, and split 'Artist - Title'."""
+    t = re.sub(r"\s*[\(\[][^\)\]]*(official|video|audio|lyric|visuali[sz]er|remaster|hd|4k|live|mv|feat|ft\.|prod)"
+               r"[^\)\]]*[\)\]]", "", title or "", flags=re.I)
+    t = re.sub(r"\s+(ft\.?|feat\.?|featuring)\s+.*$", "", t, flags=re.I).strip(" -|")
+    a = re.sub(r"\s*-\s*topic$|VEVO$", "", artist or "", flags=re.I).strip()
+    # Unbracketed trailers, quotes around the song, and the artist's name in front.
+    t = re.sub(r"\s*[-|]?\s*(official( music)? video|official audio|lyric video|lyrics|visuali[sz]er)\s*$", "", t, flags=re.I)
+    quoted = re.search(r"[\"'\u2018\u201c]([^\"'\u2019\u201d]+)[\"'\u2019\u201d]", t)
+    if quoted and a and re.sub(r"[^a-z0-9]", "", a.lower()) in re.sub(r"[^a-z0-9]", "", t.lower()):
+        t = quoted.group(1)
+    if " - " in t:
+        left, right = t.split(" - ", 1)
+        squash = lambda x: re.sub(r"[^a-z0-9]", "", x.lower())
+        if not a or squash(a) in squash(left) or squash(left) in squash(a):
+            a, t = left.strip(), right.strip()
+    return t.strip(), a
+
+
+def fetch_lyrics(title, artist, length):
+    """Timed lyric lines for a track, [] if none. Cached on disk per track."""
+    import hashlib
+    from urllib.parse import urlencode
+    t, a = clean_track(title, artist)
+    if not t:
+        return []
+    key = hashlib.sha1(f"{a}|{t}|{round(length or 0)}".encode()).hexdigest()[:20]
+    cache = LYRICS_CACHE / f"{key}.json"
+    try:
+        return json.loads(cache.read_text())
+    except (OSError, ValueError):
+        pass
+    found = None
+    try:
+        if length:
+            try:
+                found = http_json(f"{LRCLIB}/get?" + urlencode({"artist_name": a, "track_name": t,
+                                                                "duration": round(length)}))
+            except Exception:
+                found = None
+        if not found or not (found.get("syncedLyrics") or found.get("plainLyrics")):
+            hits = http_json(f"{LRCLIB}/search?" + urlencode({"track_name": t, "artist_name": a})) or []
+            if not hits:
+                hits = http_json(f"{LRCLIB}/search?" + urlencode({"q": f"{a} {t}".strip()})) or []
+            # Prefer synced lyrics, then the closest duration.
+            hits.sort(key=lambda h: (not h.get("syncedLyrics"), abs((h.get("duration") or 0) - (length or 0))))
+            found = hits[0] if hits else None
+    except Exception as e:
+        log(f"lyrics: {e}")
+        return []  # don't cache a network failure
+    lines = parse_lrc(found.get("syncedLyrics")) if found else []
+    if not lines and found and found.get("plainLyrics") and length:
+        # Unsynced: spread the lines evenly over the song, a best effort.
+        plain = [l.strip() for l in found["plainLyrics"].splitlines() if l.strip()]
+        start, span = length * 0.08, length * 0.86
+        lines = [[round(start + span * i / max(1, len(plain)), 2), l] for i, l in enumerate(plain)]
+    try:
+        LYRICS_CACHE.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps(lines))
+    except OSError:
+        pass
+    return lines
+
+
 PREFS = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "touchbar" / "prefs.json"
 
 
@@ -722,6 +815,8 @@ class Agent:
         self.art_url = None
         prefs = load_prefs()
         self.state["eq"] = prefs.get("eq", True)
+        self.state["karaoke"] = bool(prefs.get("karaoke", False))
+        self.lyrics_key = None
         for k in ("bar_style", "text_style", "viz_mood"):
             if isinstance(prefs.get(k), int):
                 self.state[k] = prefs[k]
@@ -860,6 +955,10 @@ class Agent:
             n = int(float(msg["v"]))
             self.state[msg["k"]] = self.sent_state[msg["k"]] = n
             save_prefs({msg["k"]: n})
+        elif t == "set" and msg.get("k") == "karaoke":
+            on = float(msg["v"]) > 0.5
+            self.state["karaoke"] = self.sent_state["karaoke"] = on
+            save_prefs({"karaoke": on})
         elif t == "set" and msg.get("k") in ("eq", "viz"):
             on = float(msg["v"]) > 0.5
             self.state[msg["k"]] = self.sent_state[msg["k"]] = on
@@ -1160,6 +1259,7 @@ class Agent:
             self.push_state(playing=status == "Playing", title=title, artist=artist,
                             position=self.media["position"], length=self.media["length"])
             self.update_art(self.media["art_url"])
+            self.update_lyrics()
         else:
             self.media = {}
             self.push_state(playing=False, title="", artist="", length=0)
@@ -1235,6 +1335,23 @@ class Agent:
 
         threading.Thread(target=work, daemon=True).start()
         return True
+
+    def update_lyrics(self):
+        m = self.media
+        key = (m.get("title"), m.get("artist"), round(m.get("length") or 0))
+        if key == self.lyrics_key:
+            return
+        self.lyrics_key = key
+        self.push_state(lyrics=[])
+        if not m.get("title"):
+            return
+        import threading
+
+        def work():
+            lines = fetch_lyrics(m.get("title"), m.get("artist"), m.get("length"))
+            if key == self.lyrics_key:
+                GLib.idle_add(lambda: (self.push_state(lyrics=lines), False)[1])
+        threading.Thread(target=work, daemon=True).start()
 
     def media_tick(self):
         # Players only signal changes, not progress; re-read to keep the time honest.

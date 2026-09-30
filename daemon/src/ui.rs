@@ -53,6 +53,8 @@ pub enum Part {
     Colors,
     /// Cycles how the title is drawn.
     Font,
+    /// Karaoke mode: lyrics instead of the title.
+    Karaoke,
     Mode,
     Prev,
     Play,
@@ -139,6 +141,8 @@ pub struct Model {
     /// Chosen in full-screen mode; remembered by the agent across restarts.
     pub mood: Option<String>,
     pub text_style: u8,
+    /// A short message bubble ("Karaoke mode on") and when it appeared.
+    pub toast: Option<(String, Instant)>,
     pub palette_at: Instant,
     /// Set by the renderer while a long title is scrolling, so frames keep coming.
     pub marquee: std::cell::Cell<bool>,
@@ -186,6 +190,7 @@ impl Model {
             beats: 0,
             mood: None,
             text_style: 0,
+            toast: None,
             palette_at: now,
             marquee: std::cell::Cell::new(false),
             grabs: HashMap::new(),
@@ -448,6 +453,36 @@ impl Model {
         }
     }
 
+    fn toggle_karaoke(&mut self, now: Instant) -> Vec<Effect> {
+        let on = !self.flag("karaoke");
+        self.state.insert("karaoke".into(), Value::from(on));
+        self.hold.insert("karaoke".into(), now + STATE_HOLD);
+        let msg = if on { "Karaoke mode on" } else { "Karaoke mode off" };
+        self.toast = Some((msg.to_string(), now));
+        vec![Effect::Send(Outgoing::Set { k: "karaoke".into(), v: on as u8 as f64 })]
+    }
+
+    /// Timed lyric lines for the current track: (seconds, line).
+    pub fn lyrics(&self) -> Vec<(f64, String)> {
+        self.state
+            .get("lyrics")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|l| {
+                        let l = l.as_array()?;
+                        Some((l.first()?.as_f64()?, l.get(1)?.as_str()?.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Karaoke is showing: switched on, and this track has lyrics.
+    pub fn karaoke_active(&self) -> bool {
+        self.flag("karaoke") && self.state.get("lyrics").and_then(|v| v.as_array()).is_some_and(|a| !a.is_empty())
+    }
+
     /// The colour mood: chosen in full-screen mode, else from the config.
     pub fn mood_name(&self) -> &str {
         self.mood.as_deref().unwrap_or(self.layout.settings.viz_colors.as_str())
@@ -533,6 +568,10 @@ impl Model {
                 changed = true;
             }
         }
+        if self.toast.as_ref().is_some_and(|(_, t)| now - *t > Duration::from_millis(1800)) {
+            self.toast = None;
+            changed = true;
+        }
         if self.weather.is_some_and(|t| now - t > Duration::from_secs(10)) {
             self.weather = None;
             changed = true;
@@ -554,6 +593,8 @@ impl Model {
             || (self.bars_live(now) && self.shows_spectrum())
             || (self.viz.is_some() && self.flag("playing"))
             || self.marquee.get()
+            || self.toast.is_some()
+            || (self.karaoke_active() && self.flag("playing"))
             || self.surfaces.values().any(|(_, t)| now - *t < PIXELS_STALE)
     }
 
@@ -637,6 +678,7 @@ impl Model {
                 (Part::Preset, Some(72.0), 0.0),
                 (Part::Colors, Some(72.0), 0.0),
                 (Part::Font, Some(72.0), 0.0),
+                (Part::Karaoke, Some(72.0), 0.0),
             ]);
             // Only worth a mode button when there's more than one thing to show.
             if self.visualizers().len() > 1 {
@@ -794,7 +836,7 @@ impl Model {
             Hit::Overlay(Part::Prev) => self.key_press(hit, Key::PreviousSong, &mut fx),
             Hit::Overlay(Part::Play) => self.key_press(hit, Key::PlayPause, &mut fx),
             Hit::Overlay(Part::Next) => self.key_press(hit, Key::NextSong, &mut fx),
-            Hit::Overlay(Part::Close | Part::Preset | Part::Mode | Part::Colors | Part::Font) => {
+            Hit::Overlay(Part::Close | Part::Preset | Part::Mode | Part::Colors | Part::Font | Part::Karaoke) => {
                 self.press(hit, true);
                 Grab::Press { hit, keys: vec![], act: None, inside: true, tap: None }
             }
@@ -945,6 +987,7 @@ impl Model {
                             self.prev_palette.clear(); // switch moods instantly, no crossfade
                             fx.push(Effect::Send(Outgoing::Set { k: "viz_mood".into(), v: next as f64 }));
                         }
+                        Hit::Overlay(Part::Karaoke) => fx.extend(self.toggle_karaoke(now)),
                         Hit::Overlay(Part::Font) => {
                             self.text_style = (self.text_style + 1) % TEXT_STYLES;
                             fx.push(Effect::Send(Outgoing::Set { k: "text_style".into(), v: self.text_style as f64 }));
@@ -971,6 +1014,7 @@ impl Model {
                             fx.extend(self.close_viz());
                             self.weather = Some(now);
                         }
+                        Some(Action::ToggleFlag(k)) if k == "karaoke" => fx.extend(self.toggle_karaoke(now)),
                         Some(Action::ToggleFlag(k)) => {
                             let on = !self.flag(&k);
                             self.state.insert(k.clone(), Value::from(on));

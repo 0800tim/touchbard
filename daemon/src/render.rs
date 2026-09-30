@@ -210,6 +210,9 @@ pub fn draw(m: &Model, c: &Context, now: Instant) {
     if a > 0.0 {
         draw_finger(m, &p, &pal, a, now);
     }
+    if let Some((msg, at)) = &m.toast {
+        draw_toast(&p, &pal, m, msg, (now - *at).as_secs_f64());
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -319,7 +322,8 @@ fn draw_item(m: &Model, p: &Painter, pal: &Palette, it: &Item, n: usize, x: f64,
             let scrolling = full > avail;
             m.marquee.set(scrolling && m.flag("playing"));
             let tw = full.min(avail);
-            let start = x + (w - nw - 10.0 - tw) / 2.0;
+            // Centred with the title; at the far left when lyrics take the space.
+            let start = if m.karaoke_active() { x + 10.0 } else { x + (w - nw - 10.0 - tw) / 2.0 };
             if let Some(img) = art {
                 c.save().unwrap();
                 rounded(c, start, MARGIN_Y + 3.0, side, side, 6.0);
@@ -335,7 +339,10 @@ fn draw_item(m: &Model, p: &Painter, pal: &Palette, it: &Item, n: usize, x: f64,
                 p.text(note, 30.0, false, start + nw / 2.0, cy, None);
             }
             let tx = start + nw + 10.0;
-            if scrolling {
+            if m.karaoke_active() {
+                m.marquee.set(m.flag("playing"));
+                draw_lyrics(m, p, pal, x + nw + 24.0, w - nw - 34.0, cy, LABEL_PX, false, now);
+            } else if scrolling {
                 draw_marquee(m, p, pal, &text, full, tx, avail, now);
             } else {
                 c.save().unwrap();
@@ -740,6 +747,12 @@ fn draw_viz(m: &Model, p: &Painter, pal: &Palette, v: &VizOverlay, now: Instant)
                 c.new_path();
             }
             Part::Font => button("Aa", pal.fg),
+            Part::Karaoke => {
+                // Lit up while karaoke is on.
+                let on = m.flag("karaoke");
+                p.pill(x, w, if on { pal.accent.mix(pal.surface, 0.35) } else { pal.surface.mix(pal.accent, 0.45 * pl) });
+                p.content(Some("\u{F036C}"), None, x, w, if on { pal.bg } else { pal.fg });
+            }
             Part::Mode => {
                 let icon = match v.mode.as_str() {
                     "bars" => "󰺢",
@@ -792,7 +805,9 @@ fn draw_viz(m: &Model, p: &Painter, pal: &Palette, v: &VizOverlay, now: Instant)
                 let time_w = shown.map_or(0.0, |(pos, len)| {
                     p.text_width(&format!("{} / {}", fmt_time(pos), fmt_time(len)), 18.0, true) + 36.0
                 });
-                if !label.is_empty() {
+                if m.karaoke_active() {
+                    draw_lyrics(m, p, pal, x + 10.0, w - 20.0 - time_w, y + h / 2.0, 30.0, true, now);
+                } else if !label.is_empty() {
                     match m.text_style {
                         1..=5 => draw_letter_title(m, p, pal, &label, x + 10.0, w - 20.0 - time_w, y, h, now),
                         _ => draw_dot_title(m, pal, c, &label, x + 10.0, w - 20.0 - time_w, y, h, now),
@@ -1834,4 +1849,114 @@ fn draw_letter_title(m: &Model, p: &Painter, pal: &Palette, text: &str, x: f64, 
         }
     }
     c.restore().unwrap();
+}
+
+/// A message bubble in the middle of the bar, fading in and out.
+fn draw_toast(p: &Painter, pal: &Palette, m: &Model, msg: &str, age: f64) {
+    let c = p.c;
+    let a = (age / 0.15).min(1.0) * ((1.8 - age) / 0.35).clamp(0.0, 1.0);
+    if a <= 0.0 {
+        return;
+    }
+    let tw = p.text_width(msg, 24.0, true) + 64.0;
+    let (x, y, h) = ((m.w - tw) / 2.0, MARGIN_Y + 3.0, m.h - 2.0 * MARGIN_Y - 6.0);
+    c.push_group();
+    pal.bg.set(c);
+    rounded(c, x - 3.0, y - 3.0, tw + 6.0, h + 6.0, h / 2.0 + 3.0);
+    c.fill().unwrap();
+    pal.surface.mix(pal.accent, 0.35).set(c);
+    rounded(c, x, y, tw, h, h / 2.0);
+    c.fill_preserve().unwrap();
+    pal.accent.set(c);
+    c.set_line_width(1.5);
+    c.stroke().unwrap();
+    pal.fg.set(c);
+    p.text("\u{F036C}", 24.0, false, x + 26.0, m.h / 2.0, None);
+    p.text(msg, 24.0, true, x + 40.0 + (tw - 52.0) / 2.0, m.h / 2.0, None);
+    c.pop_group_to_source().unwrap();
+    c.paint_with_alpha(a).unwrap();
+}
+
+/// Lyrics as a strip scrolling across in time with the song. The current
+/// line colours in left to right as it's sung, the classic karaoke fill;
+/// others are dimmed. Each line holds still while it's sung, then glides to
+/// the next. In full-screen mode the current line also bounces to the beat.
+#[allow(clippy::too_many_arguments)]
+fn draw_lyrics(m: &Model, p: &Painter, pal: &Palette, x: f64, w: f64, cy: f64, px: f64, full: bool, now: Instant) {
+    let c = p.c;
+    let lines = m.lyrics();
+    let Some((pos, len)) = m.position(now) else { return };
+    if lines.is_empty() || w <= 0.0 {
+        return;
+    }
+    let gap = if full { 90.0 } else { 60.0 };
+    let widths: Vec<f64> = lines.iter().map(|(_, l)| p.text_width(l, px, true)).collect();
+    let mut starts = Vec::with_capacity(lines.len());
+    let mut acc = 0.0;
+    for wd in &widths {
+        starts.push(acc);
+        acc += wd + gap;
+    }
+    // The line being sung, and how far through it we are.
+    let cur = lines.iter().rposition(|(t, _)| *t <= pos);
+    let (offset, progress) = match cur {
+        None => (starts[0] - w * 0.55 * (1.0 - (pos / lines[0].0.max(0.1)).min(1.0)), 0.0),
+        Some(i) => {
+            let t0 = lines[i].0;
+            let t1 = lines.get(i + 1).map(|l| l.0).unwrap_or(len.max(t0 + 4.0));
+            let pr = ((pos - t0) / (t1 - t0).max(0.1)).clamp(0.0, 1.0);
+            // Hold while it's sung, then glide to the next line.
+            let glide = ((pr - 0.6) / 0.4).clamp(0.0, 1.0);
+            let glide = glide * glide * (3.0 - 2.0 * glide);
+            let next = starts.get(i + 1).copied().unwrap_or(starts[i] + widths[i] + gap);
+            let fill = (pr / 0.85).min(1.0);
+            // A line wider than the space: follow the word being sung.
+            let follow = (widths[i] * fill + 24.0 - w * 0.72).clamp(0.0, (widths[i] + 24.0 - w).max(0.0));
+            (starts[i] + follow.max((next - starts[i]) * glide), fill)
+        }
+    };
+    let t = (now - m.epoch).as_secs_f64();
+    let beat = if full { m.beat_level(now) } else { 0.0 };
+    let lead = 24.0; // the current line starts a little in from the left
+    c.save().unwrap();
+    c.rectangle(x, cy - m.h / 2.0, w, m.h);
+    c.clip();
+    for (i, (_, line)) in lines.iter().enumerate() {
+        let lx = x + lead + starts[i] - offset;
+        if lx > x + w || lx + widths[i] < x {
+            continue;
+        }
+        let is_cur = cur == Some(i);
+        let dy = if is_cur { -beat * 3.0 } else { 0.0 };
+        let cx = lx + widths[i] / 2.0;
+        if is_cur {
+            let lit = if full {
+                viz_color(m, pal, t * 0.08, 0.85, 1.0).mix(Rgb(1.0, 1.0, 1.0), title_lift(m, 0.15))
+            } else {
+                pal.accent
+            };
+            // Unsung part, then the sung part filled over it.
+            pal.fg.set_a(c, 0.55);
+            p.text(line, px, true, cx, cy + dy, None);
+            c.save().unwrap();
+            c.rectangle(lx - 2.0, cy - m.h / 2.0, widths[i] * progress + 2.0, m.h);
+            c.clip();
+            lit.set(c);
+            p.text(line, px, true, cx, cy + dy, None);
+            c.restore().unwrap();
+        } else {
+            pal.fg_dim.set_a(c, if cur.is_some_and(|k| i < k) { 0.35 } else { 0.55 });
+            p.text(line, px, true, cx, cy, None);
+        }
+    }
+    c.restore().unwrap();
+    // Soft edges.
+    for (x0, x1) in [(x, x + 30.0), (x + w, x + w - 30.0)] {
+        let g = LinearGradient::new(x0, 0.0, x1, 0.0);
+        g.add_color_stop_rgba(0.0, pal.bg.0, pal.bg.1, pal.bg.2, 0.9);
+        g.add_color_stop_rgba(1.0, pal.bg.0, pal.bg.1, pal.bg.2, 0.0);
+        c.set_source(&g).unwrap();
+        c.rectangle(x0.min(x1), cy - m.h / 2.0, 30.0, m.h);
+        c.fill().unwrap();
+    }
 }
