@@ -3,9 +3,8 @@
 #
 # Every file placed is recorded with its checksum in a root-owned manifest.
 # An existing file at a target path is only replaced if the manifest says we
-# put it there (and it's unmodified), or, for installs made before the
-# manifest existed, if it carries touchbard's own marker text. Anything else
-# stops the install before a single file changes.
+# put it there (and it's unmodified), or if it's byte-identical to what we'd
+# write. Anything else stops the install before a single file changes.
 #
 # Rolls back to tiny-dfr automatically if touchbard doesn't come up.
 set -euo pipefail
@@ -50,12 +49,7 @@ ours() {
   [[ -f $path && ! -L $path ]] || return 1
   # Identical to what we'd write: replacing it changes nothing.
   [[ -n $src ]] && cmp -s "$src" "$path" && return 0
-  if [[ -n ${recorded[$path]:-} ]]; then
-    [[ $(sha256sum "$path" | cut -d' ' -f1) == "${recorded[$path]}" ]]
-    return
-  fi
-  # No manifest entry: adopt only a pre-manifest touchbard install.
-  [[ ! -f $manifest ]] && grep -aqE 'touchbard|touchbar-agent|Touch Bar' "$path"
+  [[ -n ${recorded[$path]:-} && $(sha256sum "$path" | cut -d' ' -f1) == "${recorded[$path]}" ]]
 }
 
 conflicts=()

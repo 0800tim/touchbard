@@ -13,6 +13,24 @@ if ! ls /sys/class/drm/*/modes >/dev/null 2>&1 || ! grep -qs "Touch Bar" /sys/cl
   exit 1
 fi
 
+# The agent's user unit. Only write it if it's missing, identical to ours, or
+# unchanged since we wrote it (checksum recorded below); never overwrite a
+# file or symlink someone else put there. Checked before anything changes.
+unit="$HOME/.config/systemd/user/touchbar-agent.service"
+unit_sum="${XDG_STATE_HOME:-$HOME/.local/state}/touchbar/agent-unit.sha256"
+unit_ours() {
+  [[ -L $unit ]] && return 1
+  [[ -e $unit ]] || return 0
+  cmp -s "$here/system/touchbar-agent.service" "$unit" && return 0
+  [[ -f $unit_sum && $(sha256sum "$unit" | cut -d' ' -f1) == "$(cat "$unit_sum")" ]]
+}
+if ! unit_ours; then
+  echo "Not installing: $unit exists and wasn't written by touchbard (or was changed since)."
+  echo "Move it aside and run this again."
+  read -rp "Press Enter to close."
+  exit 1
+fi
+
 # Build dependencies and runtime tools, from the official repositories only.
 need=(rust cairo pango libinput python-gobject brightnessctl cava tiny-dfr)
 missing=()
@@ -31,7 +49,9 @@ echo
 echo "Installing the system service (replaces tiny-dfr's daemon; rolls back if it fails):"
 sudo env TOUCHBARD_BIN="$CARGO_TARGET_DIR/release/touchbard" "$here/system/install.sh"
 
-install -Dm644 "$here/system/touchbar-agent.service" "$HOME/.config/systemd/user/touchbar-agent.service"
+install -Dm644 "$here/system/touchbar-agent.service" "$unit"
+mkdir -p "$(dirname "$unit_sum")"
+sha256sum "$unit" | cut -d' ' -f1 >"$unit_sum"
 systemctl --user daemon-reload
 systemctl --user enable --now touchbar-agent
 if command -v omarchy >/dev/null; then
