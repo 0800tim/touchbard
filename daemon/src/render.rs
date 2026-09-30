@@ -1692,6 +1692,8 @@ fn mood_palette(mood: &str) -> Option<(&'static [&'static str], bool, f64)> {
         "amethyst" => (&["#2e1052", "#5b24a0", "#8a4fd0", "#401777", "#b07fe8"][..], false, 0.85),
         "matrix" => (&["#00ff41", "#008f11", "#39ff14", "#005c0b", "#00c832"][..], false, 1.0),
         "disco" => (&["#ff0055", "#ffcc00", "#00d4ff", "#7cff00", "#b000ff", "#ff6a00"][..], true, 1.0),
+        // Rastafari red, gold and green, in flag-like bands.
+        "rasta" => (&["#e31b23", "#fcd116", "#009b3a"][..], true, 1.0),
         _ => return None,
     })
 }
@@ -1702,7 +1704,7 @@ fn title_lift(m: &Model, default: f64) -> f64 {
     match m.mood_name() {
         "smoke" | "amethyst" => 0.4,
         "mono" => 0.1,
-        "matrix" | "disco" => 0.0,
+        "matrix" | "disco" | "rasta" => 0.0,
         _ => default,
     }
 }

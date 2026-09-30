@@ -55,7 +55,7 @@ dim_while_scanning = true    # fade the rest of the bar while Touch ID waits
 nowplaying = "bars"          # behind the track title: "bars" (equaliser), "art" (album cover) or "off"
 viz_colors = "music"         # equaliser colours: "music" (the track's artwork), "live" (follows the video
                              # as it plays; samples the player window at thumbnail size every 2 s),
-                             # "mono", "smoke", "amethyst", "matrix", "disco", "rainbow" or "theme".
+                             # "mono", "smoke", "amethyst", "matrix", "disco", "rasta", "rainbow" or "theme".
                              # In full-screen mode the palette button cycles these, and the Aa
                              # button cycles text styles; both are remembered.
 
