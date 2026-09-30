@@ -1342,7 +1342,7 @@ class Agent:
         if key == self.lyrics_key:
             return
         self.lyrics_key = key
-        self.push_state(lyrics=[])
+        self.push_state(lyrics=[], lyrics_status="searching" if m.get("title") else "none")
         if not m.get("title"):
             return
         import threading
@@ -1350,7 +1350,8 @@ class Agent:
         def work():
             lines = fetch_lyrics(m.get("title"), m.get("artist"), m.get("length"))
             if key == self.lyrics_key:
-                GLib.idle_add(lambda: (self.push_state(lyrics=lines), False)[1])
+                status = "found" if lines else "none"
+                GLib.idle_add(lambda: (self.push_state(lyrics=lines, lyrics_status=status), False)[1])
         threading.Thread(target=work, daemon=True).start()
 
     def media_tick(self):

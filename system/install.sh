@@ -100,6 +100,11 @@ for _ in $(seq 20); do
   sleep 0.5
   if journalctl -u touchbard --since "-15s" --no-pager -q | grep -q "panel ready"; then
     echo "touchbard is running."
+    # The session agent is a user service: restart it too, or the old one
+    # keeps running against the new daemon.
+    if [[ -n ${SUDO_USER:-} ]] && systemctl --user -M "$SUDO_USER@" is-enabled touchbar-agent &>/dev/null; then
+      systemctl --user -M "$SUDO_USER@" restart touchbar-agent && echo "touchbar-agent restarted."
+    fi
     exit 0
   fi
 done

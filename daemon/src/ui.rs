@@ -457,7 +457,12 @@ impl Model {
         let on = !self.flag("karaoke");
         self.state.insert("karaoke".into(), Value::from(on));
         self.hold.insert("karaoke".into(), now + STATE_HOLD);
-        let msg = if on { "Karaoke mode on" } else { "Karaoke mode off" };
+        let msg = match (on, self.karaoke_active(), self.text("lyrics_status")) {
+            (false, ..) => "Karaoke mode off",
+            (true, true, _) => "Karaoke mode on",
+            (true, false, Some("searching")) => "Karaoke on · finding lyrics…",
+            (true, false, _) => "Karaoke on · no lyrics for this song",
+        };
         self.toast = Some((msg.to_string(), now));
         vec![Effect::Send(Outgoing::Set { k: "karaoke".into(), v: on as u8 as f64 })]
     }
