@@ -747,6 +747,22 @@ fn draw_viz(m: &Model, p: &Painter, pal: &Palette, v: &VizOverlay, now: Instant)
                 c.new_path();
             }
             Part::Font => button("Aa", pal.fg),
+            Part::Volume => {
+                // The speaker shows the level; lit while its control is open.
+                let open = v.volume.is_some();
+                let vol = m.num("volume").unwrap_or(0.0);
+                let icon = if m.flag("muted") {
+                    "\u{F075F}"
+                } else if vol < 0.34 {
+                    "\u{F057F}"
+                } else if vol < 0.67 {
+                    "\u{F0580}"
+                } else {
+                    "\u{F057E}"
+                };
+                p.pill(x, w, if open { pal.accent.mix(pal.surface, 0.35) } else { pal.surface.mix(pal.accent, 0.45 * pl) });
+                p.content(Some(icon), None, x, w, if open { pal.bg } else { pal.fg });
+            }
             Part::Karaoke => {
                 // Lit up while karaoke is on.
                 let on = m.flag("karaoke");
@@ -805,7 +821,9 @@ fn draw_viz(m: &Model, p: &Painter, pal: &Palette, v: &VizOverlay, now: Instant)
                 let time_w = shown.map_or(0.0, |(pos, len)| {
                     p.text_width(&format!("{} / {}", fmt_time(pos), fmt_time(len)), 18.0, true) + 36.0
                 });
-                if m.karaoke_active() {
+                if v.volume.is_some() {
+                    draw_volume_over(m, p, pal, x, w, y, h, now);
+                } else if m.karaoke_active() {
                     draw_lyrics(m, p, pal, x + 10.0, w - 20.0 - time_w, y + h / 2.0, 30.0, true, now);
                 } else if !label.is_empty() {
                     match m.text_style {
@@ -814,13 +832,16 @@ fn draw_viz(m: &Model, p: &Painter, pal: &Palette, v: &VizOverlay, now: Instant)
                     }
                 }
                 if let Some((pos, len)) = shown {
-                    let t = format!("{} / {}", fmt_time(pos), fmt_time(len));
-                    let tw = p.text_width(&t, 18.0, true);
-                    pal.bg.set_a(c, 0.55);
-                    rounded(c, x + w - tw - 28.0, y + 5.0, tw + 20.0, 28.0, 8.0);
-                    c.fill().unwrap();
-                    (if v.scrub.is_some() { pal.accent } else { pal.fg }).set(c);
-                    p.text(&t, 18.0, true, x + w - 18.0 - tw / 2.0, y + 19.0, None);
+                    // The track time steps aside while the volume control is open.
+                    if v.volume.is_none() {
+                        let t = format!("{} / {}", fmt_time(pos), fmt_time(len));
+                        let tw = p.text_width(&t, 18.0, true);
+                        pal.bg.set_a(c, 0.55);
+                        rounded(c, x + w - tw - 28.0, y + 5.0, tw + 20.0, 28.0, 8.0);
+                        c.fill().unwrap();
+                        (if v.scrub.is_some() { pal.accent } else { pal.fg }).set(c);
+                        p.text(&t, 18.0, true, x + w - 18.0 - tw / 2.0, y + 19.0, None);
+                    }
                     // Progress along the bottom edge; thicker, with a glowing knob, while scrubbing.
                     let th = if v.scrub.is_some() { 7.0 } else { 4.0 };
                     progress_bar(m, c, pal, x + 10.0, y + h - th - 3.0, w - 20.0, th, pos / len.max(1.0), v.scrub.is_some());
@@ -2147,4 +2168,54 @@ fn sparkle_letter(m: &Model, pal: &Palette, c: &Context, ch: char, x: f64, top: 
             c.fill().unwrap();
         }
     }
+}
+
+/// Volume over the still-playing visualiser: a wide translucent bar in the
+/// mood's colours, the speaker on the left and the level on the right.
+#[allow(clippy::too_many_arguments)]
+fn draw_volume_over(m: &Model, p: &Painter, pal: &Palette, x: f64, w: f64, y: f64, h: f64, now: Instant) {
+    let c = p.c;
+    let vol = m.num("volume").unwrap_or(0.0).clamp(0.0, 1.0);
+    let muted = m.flag("muted");
+    let (tx, tw) = m.volume_track();
+    let cy = y + h / 2.0;
+    // Soften the visuals a touch so the control reads, without hiding them.
+    pal.bg.set_a(c, 0.35);
+    rounded(c, x, y, w, h, RADIUS);
+    c.fill().unwrap();
+    let t = (now - m.epoch).as_secs_f64();
+    let lo = viz_color(m, pal, t * 0.05, 0.8, 1.0);
+    let hi = viz_color(m, pal, t * 0.05 + 0.5, 0.8, 1.0);
+    // Track, then the level in the mood's gradient.
+    let th = 12.0;
+    pal.bg.set_a(c, 0.6);
+    rounded(c, tx, cy - th / 2.0, tw, th, th / 2.0);
+    c.fill().unwrap();
+    let g = LinearGradient::new(tx, 0.0, tx + tw, 0.0);
+    g.add_color_stop_rgba(0.0, lo.0, lo.1, lo.2, 0.95);
+    g.add_color_stop_rgba(1.0, hi.0, hi.1, hi.2, 0.95);
+    c.set_source(&g).unwrap();
+    if muted {
+        pal.fg_dim.set_a(c, 0.8);
+    }
+    rounded(c, tx, cy - th / 2.0, (tw * vol).max(th), th, th / 2.0);
+    c.fill().unwrap();
+    // Knob with a soft halo.
+    let kx = tx + tw * vol;
+    let tip = lo.mix(hi, vol);
+    let halo = cairo::RadialGradient::new(kx, cy, 0.0, kx, cy, 22.0);
+    halo.add_color_stop_rgba(0.0, tip.0, tip.1, tip.2, 0.5);
+    halo.add_color_stop_rgba(1.0, tip.0, tip.1, tip.2, 0.0);
+    c.set_source(&halo).unwrap();
+    c.arc(kx, cy, 22.0, 0.0, 2.0 * PI);
+    c.fill().unwrap();
+    c.set_source_rgb(1.0, 1.0, 1.0);
+    c.arc(kx, cy, 11.0, 0.0, 2.0 * PI);
+    c.fill().unwrap();
+    // Speaker on the left, level on the right.
+    let icon = if muted { "\u{F075F}" } else { "\u{F057E}" };
+    pal.fg.set(c);
+    p.text(icon, ICON_PX * 0.8, false, x + 36.0, cy, None);
+    let label = if muted { "muted".to_string() } else { format!("{:.0}%", vol * 100.0) };
+    p.text(&label, 26.0, true, x + w - 52.0, cy, None);
 }

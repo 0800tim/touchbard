@@ -55,6 +55,8 @@ pub enum Part {
     Font,
     /// Karaoke mode: lyrics instead of the title.
     Karaoke,
+    /// Volume, drawn over the visualiser.
+    Volume,
     Mode,
     Prev,
     Play,
@@ -78,6 +80,8 @@ enum Grab {
     Track,
     /// Touching the visualiser: a tap plays/pauses, a drag scrubs.
     Scrub { start_x: f64, moved: bool },
+    /// Setting the volume on the control drawn over the visualiser.
+    Volume,
     Ignore,
 }
 
@@ -93,6 +97,8 @@ pub struct VizOverlay {
     pub mode: String,
     /// While scrubbing: the position (seconds) under the finger.
     pub scrub: Option<f64>,
+    /// The volume control is open over the visualiser; last touched then.
+    pub volume: Option<Instant>,
 }
 
 pub struct Finger {
@@ -439,7 +445,7 @@ impl Model {
             } else {
                 list[0].clone()
             };
-            self.viz = Some(VizOverlay { mode, scrub: None });
+            self.viz = Some(VizOverlay { mode, scrub: None, volume: None });
         }
         // The agent keeps the spectrum running while this is open, even with the eq off.
         vec![Effect::Send(Outgoing::Set { k: "viz".into(), v: 1.0 })]
@@ -465,6 +471,20 @@ impl Model {
         };
         self.toast = Some((msg.to_string(), now));
         vec![Effect::Send(Outgoing::Set { k: "karaoke".into(), v: on as u8 as f64 })]
+    }
+
+    /// The volume track drawn over the visualiser: (x, width).
+    pub fn volume_track(&self) -> (f64, f64) {
+        let (x, w) = self.viz_area();
+        (x + 70.0, (w - 170.0).max(1.0))
+    }
+
+    fn set_volume_at(&mut self, x: f64) -> Effect {
+        if let Some(v) = &mut self.viz {
+            v.volume = Some(Instant::now());
+        }
+        let (tx, tw) = self.volume_track();
+        self.set_value("volume", (x - tx) / tw)
     }
 
     /// Timed lyric lines for the current track: (seconds, line).
@@ -570,6 +590,14 @@ impl Model {
             let expired = s.close_at.is_some_and(|t| now >= t) || now - s.last_touch > idle;
             if expired && !dragging {
                 self.slider = None;
+                changed = true;
+            }
+        }
+        // The volume control over the visualiser tucks itself away when left alone.
+        let adjusting = self.grabs.values().any(|g| matches!(g, Grab::Volume));
+        if let Some(v) = &mut self.viz {
+            if v.volume.is_some_and(|t| now - t > Duration::from_secs(4)) && !adjusting {
+                v.volume = None;
                 changed = true;
             }
         }
@@ -684,6 +712,7 @@ impl Model {
                 (Part::Colors, Some(72.0), 0.0),
                 (Part::Font, Some(72.0), 0.0),
                 (Part::Karaoke, Some(72.0), 0.0),
+                (Part::Volume, Some(72.0), 0.0),
             ]);
             // Only worth a mode button when there's more than one thing to show.
             if self.visualizers().len() > 1 {
@@ -837,11 +866,15 @@ impl Model {
                 }
                 Grab::Press { hit, keys: vec![], act: None, inside: true, tap: None }
             }
+            Hit::Overlay(Part::Viz) if self.viz.as_ref().is_some_and(|v| v.volume.is_some()) => {
+                fx.push(self.set_volume_at(x));
+                Grab::Volume
+            }
             Hit::Overlay(Part::Viz) => Grab::Scrub { start_x: x, moved: false },
             Hit::Overlay(Part::Prev) => self.key_press(hit, Key::PreviousSong, &mut fx),
             Hit::Overlay(Part::Play) => self.key_press(hit, Key::PlayPause, &mut fx),
             Hit::Overlay(Part::Next) => self.key_press(hit, Key::NextSong, &mut fx),
-            Hit::Overlay(Part::Close | Part::Preset | Part::Mode | Part::Colors | Part::Font | Part::Karaoke) => {
+            Hit::Overlay(Part::Close | Part::Preset | Part::Mode | Part::Colors | Part::Font | Part::Karaoke | Part::Volume) => {
                 self.press(hit, true);
                 Grab::Press { hit, keys: vec![], act: None, inside: true, tap: None }
             }
@@ -939,6 +972,7 @@ impl Model {
                     fx.push(self.set_value(&key, (x - tx) / tw));
                 }
             }
+            Grab::Volume => fx.push(self.set_volume_at(x)),
             Grab::Scrub { start_x, moved } => {
                 if (x - *start_x).abs() > DRAG_THRESHOLD * 2.0 {
                     *moved = true;
@@ -993,6 +1027,11 @@ impl Model {
                             fx.push(Effect::Send(Outgoing::Set { k: "viz_mood".into(), v: next as f64 }));
                         }
                         Hit::Overlay(Part::Karaoke) => fx.extend(self.toggle_karaoke(now)),
+                        Hit::Overlay(Part::Volume) => {
+                            if let Some(v) = &mut self.viz {
+                                v.volume = if v.volume.is_some() { None } else { Some(now) };
+                            }
+                        }
                         Hit::Overlay(Part::Font) => {
                             self.text_style = (self.text_style + 1) % TEXT_STYLES;
                             fx.push(Effect::Send(Outgoing::Set { k: "text_style".into(), v: self.text_style as f64 }));

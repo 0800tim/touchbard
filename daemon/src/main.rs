@@ -547,6 +547,11 @@ fn preview(args: &[String]) -> Result<()> {
             "text" => model.text_style = v.parse()?,
             "toast" => model.toast = Some((v.to_string(), Instant::now() - Duration::from_millis(400))),
             "mood" => model.mood = Some(v.to_string()),
+            "volumeui" => {
+                if let Some(z) = &mut model.viz {
+                    z.volume = Some(Instant::now());
+                }
+            }
             "scrub" => {
                 if let Some(z) = &mut model.viz {
                     z.scrub = Some(v.parse()?);
