@@ -544,6 +544,11 @@ fn preview(args: &[String]) -> Result<()> {
                 }
             }
             "style" => model.bar_style = v.parse()?,
+            "scrub" => {
+                if let Some(z) = &mut model.viz {
+                    z.scrub = Some(v.parse()?);
+                }
+            }
             "state" => {
                 let vals: std::collections::HashMap<String, serde_json::Value> =
                     serde_json::from_str(&fs::read_to_string(v)?)?;

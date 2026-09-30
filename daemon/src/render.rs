@@ -296,12 +296,7 @@ fn draw_item(m: &Model, p: &Painter, pal: &Palette, it: &Item, n: usize, x: f64,
                 c.restore().unwrap();
             }
             if let Some((pos, len)) = m.position(now) {
-                pal.surface_hi.set_a(c, 0.8);
-                c.rectangle(x + 12.0, m.h - MARGIN_Y - 2.0, w - 24.0, 2.0);
-                c.fill().unwrap();
-                viz_color(m, pal, 0.0, 0.78, 1.0).set(c);
-                c.rectangle(x + 12.0, m.h - MARGIN_Y - 2.0, (w - 24.0) * pos / len, 2.0);
-                c.fill().unwrap();
+                progress_bar(c, pal, x + 12.0, m.h - MARGIN_Y - 3.0, w - 24.0, 3.0, pos / len, false);
             }
             if pressed > 0.0 {
                 pal.accent.set_a(c, 0.25 * pressed);
@@ -765,7 +760,8 @@ fn draw_viz(m: &Model, p: &Painter, pal: &Palette, v: &VizOverlay, now: Instant)
                     pal.surface.mix(pal.bg, 0.5).set(c);
                     rounded(c, x, y, w, h, RADIUS);
                     c.fill().unwrap();
-                    draw_bars(m, c, pal, x + 8.0, y + 4.0, w - 16.0, h - 8.0, m.bar_style, 0.95);
+                    // Dimmed a little: the title's dot matrix is the star here.
+                    draw_bars(m, c, pal, x + 8.0, y + 4.0, w - 16.0, h - 8.0, m.bar_style, 0.6);
                 } else {
                     draw_surface(m, p, pal, &v.mode, x, w, now);
                 }
@@ -777,13 +773,11 @@ fn draw_viz(m: &Model, p: &Painter, pal: &Palette, v: &VizOverlay, now: Instant)
                 };
                 let pos = m.position(now);
                 let shown = v.scrub.zip(pos.map(|(_, l)| l)).or(pos);
+                let time_w = shown.map_or(0.0, |(pos, len)| {
+                    p.text_width(&format!("{} / {}", fmt_time(pos), fmt_time(len)), 18.0, true) + 36.0
+                });
                 if !label.is_empty() {
-                    let tw = p.text_width(&label, 20.0, true).min(w * 0.6);
-                    pal.bg.set_a(c, 0.55);
-                    rounded(c, x + 8.0, y + 5.0, tw + 20.0, 28.0, 8.0);
-                    c.fill().unwrap();
-                    pal.fg.set(c);
-                    p.text(&label, 20.0, true, x + 18.0 + tw / 2.0, y + 19.0, Some(tw + 1.0));
+                    draw_dot_title(m, pal, c, &label, x + 10.0, w - 20.0 - time_w, y, h, now);
                 }
                 if let Some((pos, len)) = shown {
                     let t = format!("{} / {}", fmt_time(pos), fmt_time(len));
@@ -793,14 +787,9 @@ fn draw_viz(m: &Model, p: &Painter, pal: &Palette, v: &VizOverlay, now: Instant)
                     c.fill().unwrap();
                     (if v.scrub.is_some() { pal.accent } else { pal.fg }).set(c);
                     p.text(&t, 18.0, true, x + w - 18.0 - tw / 2.0, y + 19.0, None);
-                    // Progress line along the bottom edge; thicker while scrubbing.
-                    let th = if v.scrub.is_some() { 5.0 } else { 3.0 };
-                    pal.bg.set_a(c, 0.6);
-                    c.rectangle(x + 10.0, y + h - th - 3.0, w - 20.0, th);
-                    c.fill().unwrap();
-                    viz_color(m, pal, 0.0, 0.78, 1.0).set(c);
-                    c.rectangle(x + 10.0, y + h - th - 3.0, (w - 20.0) * pos / len.max(1.0), th);
-                    c.fill().unwrap();
+                    // Progress along the bottom edge; thicker, with a glowing knob, while scrubbing.
+                    let th = if v.scrub.is_some() { 7.0 } else { 4.0 };
+                    progress_bar(c, pal, x + 10.0, y + h - th - 3.0, w - 20.0, th, pos / len.max(1.0), v.scrub.is_some());
                 }
             }
             _ => {}
@@ -1277,4 +1266,362 @@ fn beat_text(m: &Model, p: &Painter, pal: &Palette, text: &str, cx: f64, cy: f64
     pal.fg.mix(viz_color(m, pal, (t * 0.1).fract(), 0.9, 1.0), 0.8 * b).set(c);
     p.text(text, LABEL_PX, false, cx, cy, max_w);
     c.restore().unwrap();
+}
+
+thread_local! {
+    /// The last title's dot raster, so it's rasterised once per track, not per frame.
+    static DOTS: std::cell::RefCell<Option<(String, usize, usize, Vec<bool>)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Rasterise `text` with no antialiasing at a tiny size: each lit pixel
+/// becomes one dot. Returns (columns, rows, lit), trimmed to the ink.
+fn dot_raster(font: &str, text: &str) -> (usize, usize, Vec<bool>) {
+    if let Some(hit) = DOTS.with(|d| d.borrow().as_ref().filter(|(t, ..)| t == text).map(|(_, a, b, v)| (*a, *b, v.clone()))) {
+        return hit;
+    }
+    // Small raster, then thickened: few, big, bold dots, like Omarchy's block logo.
+    let px = 8.0;
+    let (w, h) = ((text.chars().count() as f64 * px + 8.0) as i32, (px * 1.8) as i32);
+    let mut surf = cairo::ImageSurface::create(cairo::Format::A8, w.max(1), h.max(1)).unwrap();
+    {
+        let c = Context::new(&surf).unwrap();
+        let l = pangocairo::functions::create_layout(&c);
+        let mut opts = cairo::FontOptions::new().unwrap();
+        opts.set_antialias(cairo::Antialias::None);
+        opts.set_hint_style(cairo::HintStyle::Full);
+        pangocairo::functions::context_set_font_options(&l.context(), Some(&opts));
+        l.context_changed();
+        let mut fd = pango::FontDescription::from_string(font);
+        fd.set_absolute_size(px * pango::SCALE as f64);
+        fd.set_weight(pango::Weight::Heavy);
+        l.set_font_description(Some(&fd));
+        l.set_text(text);
+        c.move_to(2.0, 1.0);
+        pangocairo::functions::show_layout(&c, &l);
+    }
+    surf.flush();
+    let stride = surf.stride() as usize;
+    let data = surf.data().unwrap().to_vec();
+    let (w, h) = (w as usize, h as usize);
+    // One extra dot to the right of every stroke: two-dot-thick letters.
+    let raw = |x: usize, y: usize| data[y * stride + x] > 110;
+    let lit = |x: usize, y: usize| raw(x, y) || (x > 0 && raw(x - 1, y));
+    let rows: Vec<usize> = (0..h).filter(|&y| (0..w).any(|x| lit(x, y))).collect();
+    let cols: Vec<usize> = (0..w).filter(|&x| (0..h).any(|y| lit(x, y))).collect();
+    let (Some(&y0), Some(&y1), Some(&x0), Some(&x1)) = (rows.first(), rows.last(), cols.first(), cols.last()) else {
+        return (0, 0, vec![]);
+    };
+    let (cw, rh) = (x1 - x0 + 1, y1 - y0 + 1);
+    let mut out = vec![false; cw * rh];
+    for y in 0..rh {
+        for x in 0..cw {
+            out[y * cw + x] = lit(x0 + x, y0 + y);
+        }
+    }
+    DOTS.with(|d| *d.borrow_mut() = Some((text.to_string(), cw, rh, out.clone())));
+    (cw, rh, out)
+}
+
+/// The full-screen title as a big dot-matrix display that is itself an
+/// equaliser: each column of dots rides its slice of the spectrum, the beat
+/// jolts and jitters it, and every dot takes a flowing gradient in the
+/// song's colours. Long titles scroll.
+#[allow(clippy::too_many_arguments)]
+fn draw_dot_title(m: &Model, pal: &Palette, c: &Context, text: &str, x: f64, w: f64, y: f64, h: f64, now: Instant) {
+    let (cols, rows, lit) = dots_5x7(text).unwrap_or_else(|| dot_raster(&m.theme.font, text));
+    if cols == 0 || w <= 0.0 {
+        return;
+    }
+    let t = (now - m.epoch).as_secs_f64();
+    let beat = m.beat_level(now);
+    let cell = ((h - 8.0) / rows as f64).floor().clamp(3.0, 7.0);
+    let text_w = cols as f64 * cell;
+    let amp = (h - rows as f64 * cell) / 2.0 - 1.0;
+    let cy = y + h / 2.0;
+    // Scroll when it doesn't fit, like the marquee.
+    let (start, gap) = (x, 60.0);
+    let off = if text_w > w {
+        let moving = if m.flag("playing") { ((now - m.title_since).as_secs_f64() - MARQUEE_REST).max(0.0) } else { 0.0 };
+        (moving * MARQUEE_SPEED) % (text_w + gap)
+    } else {
+        -(w - text_w) / 2.0
+    };
+    c.save().unwrap();
+    c.rectangle(x, y, w, h);
+    c.clip();
+    let copies = if text_w > w { 2 } else { 1 };
+    for k in 0..copies {
+        let ox = start - off + k as f64 * (text_w + gap);
+        for col in 0..cols {
+            let px = ox + col as f64 * cell;
+            if px + cell < x || px > x + w {
+                continue;
+            }
+            let f = col as f64 / cols as f64;
+            let level = level_at(&m.bars, f);
+            let cf = col as f64;
+            // How this column moves: each equaliser style gives the title its own personality.
+            let dy = match m.bar_style {
+                // peaks: letters bounce on the falling peak caps
+                1 => -(level_at(&m.peaks, f) - 0.3) * amp * 1.6,
+                // dots: a steady title that breathes instead of moving
+                2 => 0.0,
+                // ripple: a wave rolls through the lettering
+                3 => (cf * 0.22 - t * 4.0).sin() * amp * (0.35 + 0.65 * level),
+                // aurora: slow, misty drift
+                4 => (cf * 0.07 + t * 0.9).sin() * amp * 0.55 + (t * 0.5 + cf * 0.02).cos() * 1.5,
+                // pixels (negative) and comet: gentle spectrum ride
+                5 | 6 => -(level - 0.35) * amp * 0.9,
+                // bars: the reactive one, jolting and jittering on the beat
+                _ => -(level - 0.35) * amp * 1.4 - beat * 3.0 + (t * 47.0 + cf * 0.9).sin() * beat * 1.6,
+            }
+            .clamp(-amp, amp);
+            let top = cy - rows as f64 * cell / 2.0 + dy;
+            if m.bar_style == 4 && col % 6 == 2 {
+                // aurora: one soft haze per letter, like smoke in space
+                let hz = viz_color(m, pal, f * 0.9 + t * 0.08, 0.85, 1.0);
+                c.set_source_rgba(hz.0, hz.1, hz.2, 0.16);
+                c.arc(px, cy + dy, rows as f64 * cell * 0.62, 0.0, 2.0 * PI);
+                c.fill().unwrap();
+            }
+            for row in 0..rows {
+                if !lit[row * cols + col] {
+                    continue;
+                }
+                let hue = f * 0.9 + t * 0.08 + row as f64 * 0.018;
+                // Lifted toward white so the title stands out from the visualiser behind.
+                let col_rgb = viz_color(m, pal, hue, 0.85, 1.0).mix(Rgb(1.0, 1.0, 1.0), 0.28 - 0.18 * level);
+                let (dx0, dy0) = (px + 0.5, top + row as f64 * cell + 0.5);
+                let d = cell - 1.0;
+                match m.bar_style {
+                    2 => {
+                        // dots: each dot breathes with its column
+                        let size = d * (0.55 + 0.45 * level) * (1.0 + 0.25 * beat);
+                        c.set_source_rgb(col_rgb.0, col_rgb.1, col_rgb.2);
+                        c.arc(dx0 + d / 2.0, dy0 + d / 2.0, size / 2.0, 0.0, 2.0 * PI);
+                        c.fill().unwrap();
+                        continue;
+                    }
+                    5 => {
+                        // pixels: the negative, punched out of the lit matrix, with a coloured rim
+                        pal.bg.set(c);
+                        rounded(c, dx0, dy0, d, d, d * 0.32);
+                        c.fill_preserve().unwrap();
+                        c.set_source_rgba(col_rgb.0, col_rgb.1, col_rgb.2, 0.75);
+                        c.set_line_width(1.0);
+                        c.stroke().unwrap();
+                        continue;
+                    }
+                    6 => {
+                        // comet: a short smoky trail behind every dot
+                        for k in 1..=2 {
+                            let kf = k as f64;
+                            let tr = viz_color(m, pal, hue + kf * 0.05, 0.8, 1.0);
+                            c.set_source_rgba(tr.0, tr.1, tr.2, 0.3 / kf);
+                            let sz = d * (0.8 - 0.2 * kf);
+                            c.rectangle(dx0 + kf * cell * 1.1, dy0 + (d - sz) / 2.0 + (t * 3.0 + kf).sin(), sz, sz);
+                            c.fill().unwrap();
+                        }
+                    }
+                    _ => {}
+                }
+                // A dark shadow under each dot keeps it legible over busy visuals.
+                pal.bg.set_a(c, 0.65);
+                c.rectangle(dx0 + 1.0, dy0 + 1.0, d, d);
+                c.fill().unwrap();
+                c.set_source_rgb(col_rgb.0, col_rgb.1, col_rgb.2);
+                if d >= 4.0 {
+                    rounded(c, dx0, dy0, d, d, d * 0.3);
+                } else {
+                    c.rectangle(dx0, dy0, d, d);
+                }
+                c.fill().unwrap();
+            }
+        }
+    }
+    c.restore().unwrap();
+}
+
+/// fm.video's brand spectrum: pink, magenta, purple.
+const FM_PINK: Rgb = Rgb(1.0, 0.180, 0.604);
+const FM_MAGENTA: Rgb = Rgb(0.808, 0.204, 0.776);
+const FM_PURPLE: Rgb = Rgb(0.608, 0.302, 1.0);
+
+/// Track progress in fm.video's pink-to-purple gradient, rounded, with a
+/// glowing knob while it's being dragged.
+#[allow(clippy::too_many_arguments)]
+fn progress_bar(c: &Context, pal: &Palette, x: f64, y: f64, w: f64, th: f64, frac: f64, scrubbing: bool) {
+    let frac = frac.clamp(0.0, 1.0);
+    pal.bg.set_a(c, 0.55);
+    rounded(c, x, y, w, th, th / 2.0);
+    c.fill().unwrap();
+    // The gradient spans the whole track, so each colour belongs to a place in the song.
+    let g = LinearGradient::new(x, 0.0, x + w, 0.0);
+    for (at, col) in [(0.0, FM_PINK), (0.5, FM_MAGENTA), (1.0, FM_PURPLE)] {
+        g.add_color_stop_rgb(at, col.0, col.1, col.2);
+    }
+    c.set_source(&g).unwrap();
+    rounded(c, x, y, (w * frac).max(th), th, th / 2.0);
+    c.fill().unwrap();
+    if scrubbing {
+        let (kx, ky) = (x + w * frac, y + th / 2.0);
+        let tip = FM_PINK.mix(FM_PURPLE, frac);
+        let glow = cairo::RadialGradient::new(kx, ky, 0.0, kx, ky, 16.0);
+        glow.add_color_stop_rgba(0.0, tip.0, tip.1, tip.2, 0.55);
+        glow.add_color_stop_rgba(1.0, tip.0, tip.1, tip.2, 0.0);
+        c.set_source(&glow).unwrap();
+        c.arc(kx, ky, 16.0, 0.0, 2.0 * PI);
+        c.fill().unwrap();
+        c.set_source_rgb(1.0, 1.0, 1.0);
+        c.arc(kx, ky, th * 0.85, 0.0, 2.0 * PI);
+        c.fill().unwrap();
+    }
+}
+
+/// The classic 5x7 LED-sign font for printable ASCII (0x20..0x7E), one
+/// byte per column, bit 0 at the top. Legible even at a handful of dots.
+const FONT_5X7: [[u8; 5]; 95] = [
+    [0x00, 0x00, 0x00, 0x00, 0x00],
+    [0x00, 0x00, 0x5F, 0x00, 0x00],
+    [0x00, 0x07, 0x00, 0x07, 0x00],
+    [0x14, 0x7F, 0x14, 0x7F, 0x14],
+    [0x24, 0x2A, 0x7F, 0x2A, 0x12],
+    [0x23, 0x13, 0x08, 0x64, 0x62],
+    [0x36, 0x49, 0x55, 0x22, 0x50],
+    [0x00, 0x05, 0x03, 0x00, 0x00],
+    [0x00, 0x1C, 0x22, 0x41, 0x00],
+    [0x00, 0x41, 0x22, 0x1C, 0x00],
+    [0x08, 0x2A, 0x1C, 0x2A, 0x08],
+    [0x08, 0x08, 0x3E, 0x08, 0x08],
+    [0x00, 0x50, 0x30, 0x00, 0x00],
+    [0x08, 0x08, 0x08, 0x08, 0x08],
+    [0x00, 0x60, 0x60, 0x00, 0x00],
+    [0x20, 0x10, 0x08, 0x04, 0x02],
+    [0x3E, 0x51, 0x49, 0x45, 0x3E],
+    [0x00, 0x42, 0x7F, 0x40, 0x00],
+    [0x42, 0x61, 0x51, 0x49, 0x46],
+    [0x21, 0x41, 0x45, 0x4B, 0x31],
+    [0x18, 0x14, 0x12, 0x7F, 0x10],
+    [0x27, 0x45, 0x45, 0x45, 0x39],
+    [0x3C, 0x4A, 0x49, 0x49, 0x30],
+    [0x01, 0x71, 0x09, 0x05, 0x03],
+    [0x36, 0x49, 0x49, 0x49, 0x36],
+    [0x06, 0x49, 0x49, 0x29, 0x1E],
+    [0x00, 0x36, 0x36, 0x00, 0x00],
+    [0x00, 0x56, 0x36, 0x00, 0x00],
+    [0x08, 0x14, 0x22, 0x41, 0x00],
+    [0x14, 0x14, 0x14, 0x14, 0x14],
+    [0x00, 0x41, 0x22, 0x14, 0x08],
+    [0x02, 0x01, 0x51, 0x09, 0x06],
+    [0x32, 0x49, 0x79, 0x41, 0x3E],
+    [0x7E, 0x11, 0x11, 0x11, 0x7E],
+    [0x7F, 0x49, 0x49, 0x49, 0x36],
+    [0x3E, 0x41, 0x41, 0x41, 0x22],
+    [0x7F, 0x41, 0x41, 0x22, 0x1C],
+    [0x7F, 0x49, 0x49, 0x49, 0x41],
+    [0x7F, 0x09, 0x09, 0x01, 0x01],
+    [0x3E, 0x41, 0x41, 0x51, 0x32],
+    [0x7F, 0x08, 0x08, 0x08, 0x7F],
+    [0x00, 0x41, 0x7F, 0x41, 0x00],
+    [0x20, 0x40, 0x41, 0x3F, 0x01],
+    [0x7F, 0x08, 0x14, 0x22, 0x41],
+    [0x7F, 0x40, 0x40, 0x40, 0x40],
+    [0x7F, 0x02, 0x04, 0x02, 0x7F],
+    [0x7F, 0x04, 0x08, 0x10, 0x7F],
+    [0x3E, 0x41, 0x41, 0x41, 0x3E],
+    [0x7F, 0x09, 0x09, 0x09, 0x06],
+    [0x3E, 0x41, 0x51, 0x21, 0x5E],
+    [0x7F, 0x09, 0x19, 0x29, 0x46],
+    [0x46, 0x49, 0x49, 0x49, 0x31],
+    [0x01, 0x01, 0x7F, 0x01, 0x01],
+    [0x3F, 0x40, 0x40, 0x40, 0x3F],
+    [0x1F, 0x20, 0x40, 0x20, 0x1F],
+    [0x7F, 0x20, 0x18, 0x20, 0x7F],
+    [0x63, 0x14, 0x08, 0x14, 0x63],
+    [0x03, 0x04, 0x78, 0x04, 0x03],
+    [0x61, 0x51, 0x49, 0x45, 0x43],
+    [0x00, 0x7F, 0x41, 0x41, 0x00],
+    [0x02, 0x04, 0x08, 0x10, 0x20],
+    [0x00, 0x41, 0x41, 0x7F, 0x00],
+    [0x04, 0x02, 0x01, 0x02, 0x04],
+    [0x40, 0x40, 0x40, 0x40, 0x40],
+    [0x00, 0x01, 0x02, 0x04, 0x00],
+    [0x20, 0x54, 0x54, 0x54, 0x78],
+    [0x7F, 0x48, 0x44, 0x44, 0x38],
+    [0x38, 0x44, 0x44, 0x44, 0x20],
+    [0x38, 0x44, 0x44, 0x48, 0x7F],
+    [0x38, 0x54, 0x54, 0x54, 0x18],
+    [0x08, 0x7E, 0x09, 0x01, 0x02],
+    [0x08, 0x14, 0x54, 0x54, 0x3C],
+    [0x7F, 0x08, 0x04, 0x04, 0x78],
+    [0x00, 0x44, 0x7D, 0x40, 0x00],
+    [0x20, 0x40, 0x44, 0x3D, 0x00],
+    [0x7F, 0x10, 0x28, 0x44, 0x00],
+    [0x00, 0x41, 0x7F, 0x40, 0x00],
+    [0x7C, 0x04, 0x18, 0x04, 0x78],
+    [0x7C, 0x08, 0x04, 0x04, 0x78],
+    [0x38, 0x44, 0x44, 0x44, 0x38],
+    [0x7C, 0x14, 0x14, 0x14, 0x08],
+    [0x08, 0x14, 0x14, 0x18, 0x7C],
+    [0x7C, 0x08, 0x04, 0x04, 0x08],
+    [0x48, 0x54, 0x54, 0x54, 0x20],
+    [0x04, 0x3F, 0x44, 0x40, 0x20],
+    [0x3C, 0x40, 0x40, 0x20, 0x7C],
+    [0x1C, 0x20, 0x40, 0x20, 0x1C],
+    [0x3C, 0x40, 0x30, 0x40, 0x3C],
+    [0x44, 0x28, 0x10, 0x28, 0x44],
+    [0x0C, 0x50, 0x50, 0x50, 0x3C],
+    [0x44, 0x64, 0x54, 0x4C, 0x44],
+    [0x00, 0x08, 0x36, 0x41, 0x00],
+    [0x00, 0x00, 0x7F, 0x00, 0x00],
+    [0x00, 0x41, 0x36, 0x08, 0x00],
+    [0x08, 0x04, 0x08, 0x10, 0x08],
+];
+
+/// A character's 5x7 columns: ASCII directly, common accents folded to their
+/// base letter, the middle dot as a dot. None if the font can't show it.
+fn glyph_5x7(ch: char) -> Option<[u8; 5]> {
+    let base = match ch {
+        '·' | '•' => return Some([0x00, 0x00, 0x08, 0x00, 0x00]),
+        '–' | '—' => '-',
+        '‘' | '’' => '\'',
+        '“' | '”' => '"',
+        'á' | 'à' | 'â' | 'ä' | 'ã' | 'å' => 'a',
+        'Á' | 'À' | 'Â' | 'Ä' | 'Ã' | 'Å' => 'A',
+        'é' | 'è' | 'ê' | 'ë' => 'e',
+        'É' | 'È' | 'Ê' | 'Ë' => 'E',
+        'í' | 'ì' | 'î' | 'ï' => 'i',
+        'Í' | 'Ì' | 'Î' | 'Ï' => 'I',
+        'ó' | 'ò' | 'ô' | 'ö' | 'õ' | 'ø' => 'o',
+        'Ó' | 'Ò' | 'Ô' | 'Ö' | 'Õ' | 'Ø' => 'O',
+        'ú' | 'ù' | 'û' | 'ü' => 'u',
+        'Ú' | 'Ù' | 'Û' | 'Ü' => 'U',
+        'ñ' => 'n',
+        'Ñ' => 'N',
+        'ç' => 'c',
+        'Ç' => 'C',
+        c => c,
+    };
+    let code = base as u32;
+    (0x20..=0x7E).contains(&code).then(|| FONT_5X7[(code - 0x20) as usize])
+}
+
+/// The title in the 5x7 font: (columns, rows, lit), or None if any character
+/// is outside it (then the rasterised font takes over).
+fn dots_5x7(text: &str) -> Option<(usize, usize, Vec<bool>)> {
+    let glyphs: Option<Vec<[u8; 5]>> = text.chars().map(glyph_5x7).collect();
+    let glyphs = glyphs?;
+    let cols = glyphs.len() * 6;
+    let rows = 7;
+    let mut lit = vec![false; cols * rows];
+    for (i, g) in glyphs.iter().enumerate() {
+        for (cx, byte) in g.iter().enumerate() {
+            for row in 0..rows {
+                if byte >> row & 1 == 1 {
+                    lit[row * cols + i * 6 + cx] = true;
+                }
+            }
+        }
+    }
+    Some((cols, rows, lit))
 }
