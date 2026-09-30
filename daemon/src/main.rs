@@ -315,7 +315,15 @@ fn run() -> Result<()> {
                     last_activity = now;
                     // Enter submits a typed password, which stops the fingerprint
                     // scan without fprintd saying so; take the prompt down with it.
-                    if k.key() == Key::Enter as u32 && model.finger.state == FingerState::Scan {
+                    // Only a press, and only once the prompt has been up a moment:
+                    // the Enter that launched `sudo` is still being released just
+                    // as the prompt appears, and must not clear it.
+                    let is_enter = k.key() == Key::Enter as u32 || k.key() == Key::KpEnter as u32;
+                    if is_enter
+                        && k.key_state() == KeyState::Pressed
+                        && model.finger.state == FingerState::Scan
+                        && now - model.finger.since > Duration::from_millis(1000)
+                    {
                         model.set_finger(FingerState::Idle);
                         dirty = true;
                     }
