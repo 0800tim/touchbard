@@ -827,7 +827,7 @@ fn draw_viz(m: &Model, p: &Painter, pal: &Palette, v: &VizOverlay, now: Instant)
                     draw_lyrics(m, p, pal, x + 10.0, w - 20.0 - time_w, y + h / 2.0, 30.0, true, now);
                 } else if !label.is_empty() {
                     match m.text_style {
-                        1..=6 => draw_letter_title(m, p, pal, &label, x + 10.0, w - 20.0 - time_w, y, h, now),
+                        1..=7 => draw_letter_title(m, p, pal, &label, x + 10.0, w - 20.0 - time_w, y, h, now),
                         _ => draw_dot_title(m, pal, c, &label, x + 10.0, w - 20.0 - time_w, y, h, now),
                     }
                 }
@@ -1760,7 +1760,7 @@ fn draw_letter_title(m: &Model, p: &Painter, pal: &Palette, text: &str, x: f64, 
     let (px, cell) = match style {
         2 => (46.0, 0.0),
         3 => (0.0, 4.0),
-        5 | 6 => (0.0, 6.0),
+        5..=7 => (0.0, 6.0),
         _ => (34.0, 0.0),
     };
     let pixel = cell > 0.0;
@@ -1846,6 +1846,17 @@ fn draw_letter_title(m: &Model, p: &Painter, pal: &Palette, text: &str, x: f64, 
                     p.text(&s, px, true, lx + lw / 2.0 + dx, cy + dy, None);
                 }
                 6 => sparkle_letter(m, pal, c, *ch, lx, cy - 3.5 * cell, cell, i, t, now, 1.0),
+                7 => {
+                    // explode: on strong beats a few letters blast apart and snap back
+                    let since = (now - m.beat_at).as_secs_f64();
+                    let chosen = hash01(fi, m.beats as f64) > 0.55 && m.beat > 0.5 && m.flag("playing");
+                    let burst = if chosen && since < 0.6 { (PI * since / 0.6).sin() * 0.55 } else { 0.0 };
+                    if burst > 0.01 {
+                        explode_letter(m, pal, c, *ch, lx, cy - 3.5 * cell, cell, i, t, burst, 1.0);
+                    } else {
+                        sparkle_letter(m, pal, c, *ch, lx, cy - 3.5 * cell, cell, i, t, now, 1.0);
+                    }
+                }
                 _ => {
                     // blocks: chunky pixels; letters light up in sequence on each beat
                     let seq = (m.beats as usize) % n.max(1);
@@ -1950,6 +1961,13 @@ fn draw_lyrics(m: &Model, p: &Painter, pal: &Palette, x: f64, w: f64, cy: f64, p
         }
         let is_cur = cur == Some(i);
         let dy = if is_cur { -beat * 3.0 } else { 0.0 };
+        if full && m.text_style == 7 {
+            // explode: each word dissolves into sparks shortly after it's sung
+            let t0 = lines[i].0;
+            let t1 = lines.get(i + 1).map(|l| l.0).unwrap_or(len.max(t0 + 4.0));
+            draw_explode_line(m, pal, c, line, lx, cy + dy, t0, t1, pos, t, now);
+            continue;
+        }
         if is_cur {
             let lit = if full {
                 viz_color(m, pal, t * 0.08, 0.85, 1.0).mix(Rgb(1.0, 1.0, 1.0), title_lift(m, 0.15))
@@ -1998,7 +2016,7 @@ fn char_width(p: &Painter, ch: char, px: f64) -> f64 {
 /// Pixel size of the 5x7 lyric styles, or None for the font-based ones.
 fn lyric_cell(style: u8) -> Option<f64> {
     match style {
-        0 | 5 | 6 => Some(6.0),
+        0 | 5..=7 => Some(6.0),
         3 => Some(5.0),
         _ => None,
     }
@@ -2100,7 +2118,7 @@ fn lyric_draw(m: &Model, p: &Painter, line: &str, lx: f64, cy: f64, px: f64, ful
 /// Columns per character on the pixel grid: 5x7 glyphs plus a gap, or the
 /// sparkle style's thickened 6x7 plus a gap.
 fn glyph_advance(style: u8) -> f64 {
-    if style == 6 { 7.0 } else { 6.0 }
+    if style >= 6 { 7.0 } else { 6.0 }
 }
 
 /// A 5x7 glyph thickened to 6x7: every stroke two pixels wide.
@@ -2218,4 +2236,64 @@ fn draw_volume_over(m: &Model, p: &Painter, pal: &Palette, x: f64, w: f64, y: f6
     p.text(icon, ICON_PX * 0.8, false, x + 36.0, cy, None);
     let label = if muted { "muted".to_string() } else { format!("{:.0}%", vol * 100.0) };
     p.text(&label, 26.0, true, x + w - 52.0, cy, None);
+}
+
+/// One letter bursting into sparks: every thick pixel flies outward along
+/// its own direction, falls a little, shrinks and fades. `burst` 0..1.
+#[allow(clippy::too_many_arguments)]
+fn explode_letter(m: &Model, pal: &Palette, c: &Context, ch: char, x: f64, top: f64, cell: f64, index: usize, t: f64, burst: f64, alpha: f64) {
+    let d = cell - 1.0;
+    let fade = (1.0 - burst).powf(1.2) * alpha;
+    if fade <= 0.01 {
+        return;
+    }
+    for (cx, byte) in thick_glyph(ch).iter().enumerate() {
+        let col_i = (index * 7 + cx) as f64;
+        for row in 0..7 {
+            if byte >> row & 1 == 0 {
+                continue;
+            }
+            let rf = row as f64;
+            let (h1, h2) = (hash01(col_i, rf), hash01(rf * 7.1, col_i * 3.3));
+            let angle = h1 * 2.0 * PI;
+            let speed = 30.0 + 110.0 * h2;
+            let dx = angle.cos() * speed * burst;
+            let dy = angle.sin() * speed * burst * 0.6 + 45.0 * burst * burst; // a little gravity
+            let size = d * (1.0 - 0.75 * burst);
+            let hue = col_i * 0.013 + t * 0.35 + h1 * 0.25;
+            // A white flash as it breaks, then the mood's colours as it scatters.
+            let flash = (burst * 4.0).min(1.0) * (1.0 - burst);
+            let col = viz_color(m, pal, hue, 0.9, 1.0).mix(Rgb(1.0, 1.0, 1.0), 0.6 * flash);
+            c.set_source_rgba(col.0, col.1, col.2, fade);
+            c.rectangle(x + cx as f64 * cell + dx + (d - size) / 2.0, top + rf * cell + dy + (d - size) / 2.0, size, size);
+            c.fill().unwrap();
+        }
+    }
+}
+
+/// A karaoke line in the explode style: letters wait as quiet outlines,
+/// sparkle as they're sung, then burst into sparks and dissolve behind the wipe.
+#[allow(clippy::too_many_arguments)]
+fn draw_explode_line(m: &Model, pal: &Palette, c: &Context, line: &str, lx: f64, cy: f64, t0: f64, t1: f64, pos: f64, t: f64, now: Instant) {
+    let cell = 6.0;
+    let top = cy - 3.5 * cell;
+    let n = line.chars().count().max(1);
+    for (i, ch) in line.chars().enumerate() {
+        if ch.is_whitespace() {
+            continue;
+        }
+        let x = lx + i as f64 * 7.0 * cell;
+        // When this letter is sung: spread across the line's time.
+        let sung_at = t0 + (i as f64 / n as f64) * (t1 - t0) * 0.85;
+        if pos < sung_at {
+            thick_letter(c, ch, x, top, cell, pal.fg_dim, 0.45);
+            continue;
+        }
+        let burst = ((pos - sung_at - 0.7) / 1.6).clamp(0.0, 1.0);
+        if burst <= 0.0 {
+            sparkle_letter(m, pal, c, ch, x, top, cell, i, t, now, 1.0);
+        } else {
+            explode_letter(m, pal, c, ch, x, top, cell, i, t, burst, 1.0);
+        }
+    }
 }
