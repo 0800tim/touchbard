@@ -112,7 +112,7 @@ PRESETS = {
     "media": {"kind": "media", "w": 250},
     "nowplaying": {"kind": "nowplaying", "act": "visualizer"},
     "visualizer": btn("󰺢", w=84, act="visualizer"),
-    "weather": {"kind": "weather", "w": 240, "act": "weather"},
+    "weather": {"kind": "weather", "w": 290, "act": "weather"},
     "eq": btn("󰺢", w=72, style="plain", act={"toggle_flag": "eq"}, toggle="eq", style_on="subtle"),
     "workspaces": {"kind": "workspaces", "w": 300, "style": "plain",
                    "act": {"cmd": "hyprctl eval 'hl.dispatch(hl.dsp.focus({ workspace = \"{id}\" }))'"}},

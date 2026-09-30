@@ -9,10 +9,10 @@ use std::f64::consts::PI;
 use std::fs;
 use std::time::Instant;
 
-const MARGIN_Y: f64 = 3.0;
+const MARGIN_Y: f64 = 2.0;
 const RADIUS: f64 = 9.0;
-const ICON_PX: f64 = 40.0;
-const LABEL_PX: f64 = 26.0;
+const ICON_PX: f64 = 50.0;
+const LABEL_PX: f64 = 32.0;
 
 #[derive(Clone, Copy)]
 pub struct Rgb(pub f64, pub f64, pub f64);
@@ -377,8 +377,8 @@ fn draw_item(m: &Model, p: &Painter, pal: &Palette, it: &Item, n: usize, x: f64,
             let iw = p.text_width(&icon, ICON_PX, false);
             let tw = p.text_width(&temp, LABEL_PX, true);
             let gap = 8.0;
-            let arrow = 22.0;
-            let ww = wind.as_ref().map_or(0.0, |(t, _)| 14.0 + arrow + 4.0 + p.text_width(t, 17.0, true));
+            let arrow = 26.0;
+            let ww = wind.as_ref().map_or(0.0, |(t, _)| 14.0 + arrow + 4.0 + p.text_width(t, 22.0, true));
             let mut cx = x + (w - iw - gap - tw - ww) / 2.0;
             let cy = m.h / 2.0;
             (if stale { tint.mix(pal.fg_dim, 0.6) } else { tint }).set(c);
@@ -390,11 +390,11 @@ fn draw_item(m: &Model, p: &Painter, pal: &Palette, it: &Item, n: usize, x: f64,
             if let Some((speed, dir)) = wind {
                 let ink2 = if stale { pal.fg_dim } else { pal.fg.mix(pal.fg_dim, 0.25) };
                 if let Some(from) = dir {
-                    wind_arrow(c, cx + arrow / 2.0, cy, from, 1.0, ink2);
+                    wind_arrow(c, cx + arrow / 2.0, cy, from, 1.25, ink2);
                 }
                 ink2.set(c);
-                let sw = p.text_width(&speed, 17.0, true);
-                p.text(&speed, 17.0, true, cx + arrow + 4.0 + sw / 2.0, cy, None);
+                let sw = p.text_width(&speed, 22.0, true);
+                p.text(&speed, 22.0, true, cx + arrow + 4.0 + sw / 2.0, cy, None);
             }
         }
         Kind::Plugin => {
