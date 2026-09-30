@@ -122,6 +122,10 @@ pub struct Model {
     pub epoch: Instant,
     /// The previous palette and when the current one arrived, for crossfades.
     pub prev_palette: Vec<String>,
+    /// Beat detection on the bass: a slow average, and the last hit.
+    pub bass_avg: f64,
+    pub beat: f64,
+    pub beat_at: Instant,
     pub palette_at: Instant,
     /// Set by the renderer while a long title is scrolling, so frames keep coming.
     pub marquee: std::cell::Cell<bool>,
@@ -163,6 +167,9 @@ impl Model {
             title_since: now,
             epoch: now,
             prev_palette: vec![],
+            bass_avg: 0.0,
+            beat: 0.0,
+            beat_at: now - Duration::from_secs(1),
             palette_at: now,
             marquee: std::cell::Cell::new(false),
             grabs: HashMap::new(),
@@ -326,8 +333,25 @@ impl Model {
             // Peaks hang for a moment, then fall.
             *p = (*p - 0.7 * dt).max(*b);
         }
+        // A beat is the bass jumping clearly above its recent average.
+        let lows = (v.len() / 10).max(1);
+        let bass = v.iter().take(lows).map(|b| *b as f64).sum::<f64>() / lows as f64;
+        let rise = bass - self.bass_avg * 1.15;
+        if rise > 0.04 && now - self.beat_at > Duration::from_millis(120) {
+            self.beat = (rise * 4.0).clamp(0.35, 1.0);
+            self.beat_at = now;
+        }
+        self.bass_avg += (bass - self.bass_avg) * (dt as f64 * 2.5).min(1.0);
         self.bars = v;
         self.bars_at = now;
+    }
+
+    /// 0..1: how hard the last beat hit, decaying over ~0.3 s.
+    pub fn beat_level(&self, now: Instant) -> f64 {
+        if !self.eq_on() || !self.flag("playing") {
+            return 0.0;
+        }
+        self.beat * (-(now - self.beat_at).as_secs_f64() * 9.0).exp()
     }
 
     pub fn bars_live(&self, now: Instant) -> bool {

@@ -315,8 +315,8 @@ fn draw_item(m: &Model, p: &Painter, pal: &Palette, it: &Item, n: usize, x: f64,
                 Some(a) => format!("{title}  ·  {a}"),
                 None => title.to_string(),
             };
-            // With artwork on, the cover takes the note's place beside the title.
-            let art = if bg_mode == "art" { m.art.as_ref() } else { None };
+            // The cover, when there is one, sits to the left of everything.
+            let art = if bg_mode != "off" { m.art.as_ref() } else { None };
             let side = m.h - 2.0 * MARGIN_Y - 6.0;
             let nw = if art.is_some() { side } else { p.text_width(note, 30.0, false) };
             let full = p.text_width(&text, LABEL_PX, false);
@@ -343,8 +343,11 @@ fn draw_item(m: &Model, p: &Painter, pal: &Palette, it: &Item, n: usize, x: f64,
             if scrolling {
                 draw_marquee(m, p, pal, &text, full, tx, avail, now);
             } else {
-                pal.fg.set(c);
-                p.text(&text, LABEL_PX, false, tx + tw / 2.0, cy, Some(tw + 1.0));
+                c.save().unwrap();
+                c.rectangle(tx - 2.0, MARGIN_Y, avail + 4.0, m.h - 2.0 * MARGIN_Y);
+                c.clip();
+                beat_text(m, p, pal, &text, tx + tw / 2.0, cy, Some(tw + 1.0), tx, now);
+                c.restore().unwrap();
             }
         }
         Kind::Workspaces => {
@@ -980,8 +983,7 @@ fn draw_marquee(m: &Model, p: &Painter, pal: &Palette, text: &str, full: f64, tx
         if bx > tx + avail || bx + cycle < tx {
             continue;
         }
-        pal.fg.set(c);
-        p.text(text, LABEL_PX, false, bx + full / 2.0, cy, None);
+        beat_text(m, p, pal, text, bx + full / 2.0, cy, None, bx, now);
         draw_comet(m, c, pal, bx + full + gap_a, cy, t);
     }
     c.restore().unwrap();
@@ -1253,4 +1255,26 @@ fn palette_lerp(colours: &[String], h: f64) -> Rgb {
     let f = pos - pos.floor();
     let f = f * f * (3.0 - 2.0 * f); // ease between stops
     Rgb::parse(&colours[i]).mix(Rgb::parse(&colours[(i + 1) % n]), f)
+}
+
+/// The track title, dancing to the beat: it swells, hops and jitters on each
+/// bass hit and flashes toward the song's colour, then settles.
+#[allow(clippy::too_many_arguments)]
+fn beat_text(m: &Model, p: &Painter, pal: &Palette, text: &str, cx: f64, cy: f64, max_w: Option<f64>, anchor_x: f64, now: Instant) {
+    let c = p.c;
+    let b = m.beat_level(now);
+    let t = (now - m.epoch).as_secs_f64();
+    c.save().unwrap();
+    if b > 0.01 {
+        let jx = (t * 53.0).sin() * 1.6 * b;
+        let jy = (t * 41.0).cos() * 1.2 * b - 2.5 * b;
+        let scale = 1.0 + 0.08 * b;
+        // Grow from the anchor (the text's left edge when it's standing still).
+        c.translate(anchor_x + jx, cy + jy);
+        c.scale(scale, scale);
+        c.translate(-anchor_x, -cy);
+    }
+    pal.fg.mix(viz_color(m, pal, (t * 0.1).fract(), 0.9, 1.0), 0.8 * b).set(c);
+    p.text(text, LABEL_PX, false, cx, cy, max_w);
+    c.restore().unwrap();
 }

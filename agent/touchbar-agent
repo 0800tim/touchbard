@@ -522,30 +522,38 @@ def fetch_weather(wcfg, where):
 
 
 def art_palette(pb, count=5):
-    """A few vivid colours that carry an image's look, as hex strings.
-
-    Hue buckets weighted by saturation x brightness; each chosen bucket gives
-    its weighted mean colour, pushed bright enough to glow on the Touch Bar.
-    Mostly-one-hue images get tonal variations so the palette still moves."""
-    import colorsys
+    """A few vivid colours that carry an image's look, as hex strings."""
     from gi.repository import GdkPixbuf
     w = 48
     small = pb.scale_simple(w, max(1, round(pb.get_height() * w / pb.get_width())), GdkPixbuf.InterpType.BILINEAR)
     data, stride, nch = small.get_pixels(), small.get_rowstride(), small.get_n_channels()
+    pixels = [tuple(data[y * stride + x * nch + k] for k in range(3)) + (1.0,)
+              for y in range(small.get_height()) for x in range(small.get_width())]
+    return palette_from_pixels(pixels, count)
+
+
+def palette_from_pixels(pixels, count=5):
+    """Palette from (r, g, b, weight) pixels, 0-255 channels.
+
+    Hue buckets weighted by saturation x brightness x the pixel's own weight;
+    each chosen bucket gives its weighted mean colour, pushed bright enough to
+    glow on the Touch Bar. Mostly-one-hue images get tonal variations so the
+    palette still moves. Sorted by hue, so successive palettes blend calmly."""
+    import colorsys
     bins = [[0.0, 0.0, 0.0, 0.0] for _ in range(24)]  # weight, r, g, b
-    for y in range(small.get_height()):
-        row = y * stride
-        for x in range(small.get_width()):
-            r, g, b = (data[row + x * nch + k] / 255 for k in range(3))
-            hh, ss, vv = colorsys.rgb_to_hsv(r, g, b)
-            if vv < 0.18 or ss < 0.12:
-                continue  # near-black and greys say little about the colour
-            wgt = ss * vv
-            bn = bins[int(hh * 24) % 24]
-            bn[0] += wgt
-            bn[1] += r * wgt
-            bn[2] += g * wgt
-            bn[3] += b * wgt
+    for r8, g8, b8, pw in pixels:
+        if pw <= 0:
+            continue
+        r, g, b = r8 / 255, g8 / 255, b8 / 255
+        hh, ss, vv = colorsys.rgb_to_hsv(r, g, b)
+        if vv < 0.18 or ss < 0.12:
+            continue  # near-black and greys say little about the colour
+        wgt = ss * vv * pw
+        bn = bins[int(hh * 24) % 24]
+        bn[0] += wgt
+        bn[1] += r * wgt
+        bn[2] += g * wgt
+        bn[3] += b * wgt
     ranked = sorted(range(24), key=lambda i: -bins[i][0])
     picked = []
     for i in ranked:
@@ -567,7 +575,28 @@ def art_palette(pb, count=5):
         h0, s0, v0 = colours[0]
         colours += [((h0 + 0.05) % 1, s0 * 0.8, 1.0), ((h0 - 0.06) % 1, min(1, s0 * 1.15), v0 * 0.85),
                     ((h0 + 0.1) % 1, s0 * 0.6, 1.0)][:4 - len(colours)]
+    colours.sort(key=lambda c: c[0])
     return ["#%02x%02x%02x" % tuple(round(c * 255) for c in colorsys.hsv_to_rgb(*hsv)) for hsv in colours]
+
+
+def read_ppm(data):
+    """(width, height, rgb bytes) from a binary PPM, as grim writes it."""
+    parts, pos = [], 0
+    while len(parts) < 4:
+        while data[pos:pos + 1].isspace():
+            pos += 1
+        if data[pos:pos + 1] == b"#":
+            pos = data.index(b"\n", pos) + 1
+            continue
+        end = pos
+        while not data[end:end + 1].isspace():
+            end += 1
+        parts.append(data[pos:end])
+        pos = end
+    if parts[0] != b"P6":
+        raise ValueError("not a binary PPM")
+    w, h = int(parts[1]), int(parts[2])
+    return w, h, data[pos + 1:pos + 1 + w * h * 3]
 
 
 PREFS = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "touchbar" / "prefs.json"
@@ -712,6 +741,8 @@ class Agent:
         self.poll_sysfs()
         GLib.timeout_add_seconds(3, self.media_tick)
         self.weather_where, self.weather_ok_at, self.weather_retry = None, 0.0, None
+        self.live_prev, self.live_busy = None, False
+        GLib.timeout_add(2000, self.live_tick)
         self.weather_tick()
         GLib.timeout_add_seconds(15 * 60, self.weather_tick)
 
@@ -1128,6 +1159,73 @@ class Agent:
             p.send({"t": "media", **self.media})
         self.sync_plugins()
         return False
+
+    # ---- live colours: follow the video on screen --------------------------
+
+    def player_window(self):
+        """Hyprland's stable id for the playing player's window, or None."""
+        name = self.media.get("player")
+        if not name:
+            return None
+        try:
+            pid = self.session.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                                         "GetConnectionUnixProcessID", GLib.Variant("(s)", (name,)),
+                                         None, Gio.DBusCallFlags.NONE, 500, None).unpack()[0]
+            clients = json.loads(subprocess.run(["hyprctl", "-j", "clients"], capture_output=True, text=True,
+                                                timeout=2).stdout or "[]")
+        except (GLib.Error, OSError, ValueError, subprocess.TimeoutExpired):
+            return None
+        mine = [c for c in clients if c.get("pid") == pid and c.get("stableId")]
+        if not mine:
+            return None
+        title = (self.media.get("title") or "").lower()
+        # Prefer the window showing this track, else the biggest one.
+        mine.sort(key=lambda c: (title not in (c.get("title") or "").lower(),
+                                 -(c.get("size", [0, 0])[0] * c.get("size", [0, 0])[1])))
+        return mine[0]["stableId"]
+
+    def live_tick(self):
+        settings = (self.layout_msg or {}).get("settings", {})
+        if (settings.get("viz_colors") != "live" or not self.state.get("playing") or not self.power_on
+                or not self.sock or self.live_busy):
+            self.live_prev = None if not self.state.get("playing") else self.live_prev
+            return True
+        wid = self.player_window()
+        if not wid:
+            return True
+        self.live_busy = True
+        import threading
+
+        def work():
+            palette = None
+            try:
+                # A thumbnail of that window, even if it's on another workspace.
+                out = subprocess.run(["grim", "-T", str(wid), "-s", "0.06", "-t", "ppm", "-"],
+                                     capture_output=True, timeout=3).stdout
+                w, h, rgb = read_ppm(out)
+                prev, self.live_prev = self.live_prev, (w, h, rgb)
+                if prev and prev[:2] == (w, h):
+                    old = prev[2]
+                    pixels, motion = [], 0.0
+                    for i in range(0, w * h * 3, 3):
+                        d = (abs(rgb[i] - old[i]) + abs(rgb[i + 1] - old[i + 1]) + abs(rgb[i + 2] - old[i + 2])) / 765
+                        motion += d
+                        # What moved is the video; what didn't is page and grid.
+                        pixels.append((rgb[i], rgb[i + 1], rgb[i + 2], 0.03 + min(1.0, d * 8)))
+                    if motion / (w * h) > 0.004:
+                        palette = palette_from_pixels(pixels)
+            except (OSError, ValueError, IndexError, subprocess.TimeoutExpired) as e:
+                log(f"live colours: {e}")
+
+            def done():
+                self.live_busy = False
+                if palette:
+                    self.push_state(palette=palette)
+                return False
+            GLib.idle_add(done)
+
+        threading.Thread(target=work, daemon=True).start()
+        return True
 
     def media_tick(self):
         # Players only signal changes, not progress; re-read to keep the time honest.
