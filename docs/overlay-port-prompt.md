@@ -28,12 +28,14 @@ Clone the repo first and read `README.md`, `daemon/src/{ui,render,proto,main}.rs
 - **The music experience to reproduce** (the full-screen "viz" overlay):
   - album art, the title with a beat-reactive dot-matrix treatment, and karaoke lyrics with a left-to-right fill
   - 7 visualisers (bars, peaks, dots, ripple, aurora, pixels, comet)
-  - 8 colour moods (music from the artwork, mono, smoke, amethyst, matrix, disco, rainbow, theme)
+  - 9 colour moods (music from the artwork, mono, smoke, amethyst, matrix, disco, rasta, rainbow, theme)
   - 8 text styles (dot matrix, wave, outline, typewriter, scatter, blocks, sparkle, explode)
   - a volume bar drawn over the visualiser
+  - the lyrics sync adjuster: tap the time; ±0.1 s, remembered per track, optional Share back to LRCLIB
+  - a "No lyrics available" banner in sparkle/explode blocks when a song has no lyrics
   - a drag-to-seek progress bar in fm.video's pink → magenta → purple (`#ff2e9a`, `#ce34c6`, `#9b4dff`) in the music mood, and the mood's own gradient otherwise
   - the transport controls
-  - the buttons: ⟳ style, 🎨 mood, Aa text, 🎤 karaoke, 🔊 volume
+  - the buttons: magic-wand style, 🎨 mood, Aa (a live preview of the text style), 🎤 karaoke, 🔊 volume
 
 ## The architecture I want (reuse, don't rewrite)
 
