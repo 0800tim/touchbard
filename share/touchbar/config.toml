@@ -51,6 +51,7 @@ slider_timeout = 5           # seconds before an opened slider tucks itself away
 fingerprint_width = 440      # width of the Touch ID prompt at the right end
 dim_while_scanning = true    # fade the rest of the bar while Touch ID waits
 nowplaying = "bars"          # behind the track title: "bars" (equaliser), "art" (album cover) or "off"
+viz_colors = "music"         # equaliser colours: "music" (from the track's artwork/video), "rainbow" or "theme"
 
 [weather]
 # Units follow the location's country (°F and mph only in the US) unless set here.

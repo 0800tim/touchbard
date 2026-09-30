@@ -299,7 +299,7 @@ fn draw_item(m: &Model, p: &Painter, pal: &Palette, it: &Item, n: usize, x: f64,
                 pal.surface_hi.set_a(c, 0.8);
                 c.rectangle(x + 12.0, m.h - MARGIN_Y - 2.0, w - 24.0, 2.0);
                 c.fill().unwrap();
-                pal.accent.set(c);
+                viz_color(m, pal, 0.0, 0.78, 1.0).set(c);
                 c.rectangle(x + 12.0, m.h - MARGIN_Y - 2.0, (w - 24.0) * pos / len, 2.0);
                 c.fill().unwrap();
             }
@@ -625,10 +625,10 @@ pub fn draw_bars(m: &Model, c: &Context, pal: &Palette, x: f64, y: f64, w: f64, 
     }
     let t = (Instant::now() - m.epoch).as_secs_f64();
     match style {
-        3 => return draw_ripple(m, c, x, y, w, h, t, alpha),
-        4 => return draw_aurora(m, c, x, y, w, h, t, alpha),
-        5 => return draw_pixels(m, c, x, y, w, h, t, alpha),
-        6 => return draw_smoke_bars(m, c, x, y, w, h, t, alpha),
+        3 => return draw_ripple(m, c, pal, x, y, w, h, t, alpha),
+        4 => return draw_aurora(m, c, pal, x, y, w, h, t, alpha),
+        5 => return draw_pixels(m, c, pal, x, y, w, h, t, alpha),
+        6 => return draw_smoke_bars(m, c, pal, x, y, w, h, t, alpha),
         _ => {}
     }
     // Fewer, fatter bars on narrow areas.
@@ -642,7 +642,7 @@ pub fn draw_bars(m: &Model, c: &Context, pal: &Palette, x: f64, y: f64, w: f64, 
     for i in 0..n {
         let v = sample(src, i).clamp(0.0, 1.0);
         let t = i as f64 / (n - 1).max(1) as f64;
-        let col = pal.accent.mix(pal.accent2, t);
+        let col = viz_color(m, pal, t * 0.9, 0.78, 1.0);
         let bx = x + i as f64 * bw + bw * 0.18;
         let bwid = bw * 0.64;
         match style {
@@ -795,7 +795,7 @@ fn draw_viz(m: &Model, p: &Painter, pal: &Palette, v: &VizOverlay, now: Instant)
                     pal.bg.set_a(c, 0.6);
                     c.rectangle(x + 10.0, y + h - th - 3.0, w - 20.0, th);
                     c.fill().unwrap();
-                    pal.accent.set(c);
+                    viz_color(m, pal, 0.0, 0.78, 1.0).set(c);
                     c.rectangle(x + 10.0, y + h - th - 3.0, (w - 20.0) * pos / len.max(1.0), th);
                     c.fill().unwrap();
                 }
@@ -982,7 +982,7 @@ fn draw_marquee(m: &Model, p: &Painter, pal: &Palette, text: &str, full: f64, tx
         }
         pal.fg.set(c);
         p.text(text, LABEL_PX, false, bx + full / 2.0, cy, None);
-        draw_comet(m, c, bx + full + gap_a, cy, t);
+        draw_comet(m, c, pal, bx + full + gap_a, cy, t);
     }
     c.restore().unwrap();
 
@@ -1003,7 +1003,7 @@ fn draw_marquee(m: &Model, p: &Painter, pal: &Palette, text: &str, full: f64, tx
 }
 
 /// Rainbow bars fading into drifting coloured smoke. `x0` is the comet's head.
-fn draw_comet(m: &Model, c: &Context, x0: f64, cy: f64, t: f64) {
+fn draw_comet(m: &Model, c: &Context, pal: &Palette, x0: f64, cy: f64, t: f64) {
     let h = m.h - 2.0 * MARGIN_Y - 8.0;
     // Smoke first, so the bars sit on top of it.
     for j in 0..8 {
@@ -1011,7 +1011,7 @@ fn draw_comet(m: &Model, c: &Context, x0: f64, cy: f64, t: f64) {
         let px = x0 + COMET_W * (0.12 + 0.88 * fj) + (t * 1.3 + j as f64 * 1.7).sin() * 7.0;
         let py = cy + (t * 0.9 + j as f64 * 2.3).sin() * 8.0 * fj;
         let r = 10.0 + 24.0 * fj;
-        let col = hsv((fj * 0.7 + t * 0.07 + 0.55).fract(), 0.7, 1.0);
+        let col = viz_color(m, pal, fj * 0.7 + t * 0.07 + 0.55, 0.7, 1.0);
         let g = cairo::RadialGradient::new(px, py, 0.0, px, py, r);
         g.add_color_stop_rgba(0.0, col.0, col.1, col.2, 0.42 * (1.0 - fj * 0.6));
         g.add_color_stop_rgba(1.0, col.0, col.1, col.2, 0.0);
@@ -1032,7 +1032,7 @@ fn draw_comet(m: &Model, c: &Context, x0: f64, cy: f64, t: f64) {
             0.35 + 0.3 * (t * 5.0 + i as f64 * 0.7).sin()
         };
         let bh = ((0.2 + 0.8 * level.clamp(0.0, 1.0)) * h * (1.0 - frac * 0.5)).max(3.0);
-        let col = hsv((frac * 0.85 + t * 0.12).fract(), 0.78, 1.0);
+        let col = viz_color(m, pal, frac * 0.85 + t * 0.12, 0.78, 1.0);
         c.set_source_rgba(col.0, col.1, col.2, 0.95 * (1.0 - frac).powf(1.3));
         let bw = step * 0.72;
         rounded(c, x0 + i as f64 * step, cy - bh / 2.0, bw, bh, bw / 2.0);
@@ -1069,7 +1069,7 @@ fn band(bars: &[f32], from: f64, to: f64) -> f64 {
 /// Rainbow rings spreading like ripples on water, each source pulsing with
 /// its slice of the spectrum.
 #[allow(clippy::too_many_arguments)]
-fn draw_ripple(m: &Model, c: &Context, x: f64, y: f64, w: f64, h: f64, t: f64, alpha: f64) {
+fn draw_ripple(m: &Model, c: &Context, pal: &Palette, x: f64, y: f64, w: f64, h: f64, t: f64, alpha: f64) {
     let sources = 5;
     let cy = y + h / 2.0;
     c.save().unwrap();
@@ -1084,7 +1084,7 @@ fn draw_ripple(m: &Model, c: &Context, x: f64, y: f64, w: f64, h: f64, t: f64, a
             let phase = (t * (0.45 + 0.1 * fi) + k as f64 / 5.0 + i as f64 * 0.17).fract();
             let r = 6.0 + phase * reach * (0.5 + 0.8 * e);
             let a = (1.0 - phase).powf(1.6) * (0.25 + 0.9 * e) * alpha;
-            let col = hsv((fi * 0.8 + t * 0.05 + phase * 0.35).fract(), 0.75, 1.0);
+            let col = viz_color(m, pal, fi * 0.8 + t * 0.05 + phase * 0.35, 0.75, 1.0);
             c.set_source_rgba(col.0, col.1, col.2, a.min(1.0));
             c.set_line_width(1.5 + 4.0 * e * (1.0 - phase));
             c.save().unwrap();
@@ -1095,7 +1095,7 @@ fn draw_ripple(m: &Model, c: &Context, x: f64, y: f64, w: f64, h: f64, t: f64, a
             c.stroke().unwrap();
         }
         // A bright drop at each source.
-        let col = hsv((fi * 0.8 + t * 0.05).fract(), 0.6, 1.0);
+        let col = viz_color(m, pal, fi * 0.8 + t * 0.05, 0.6, 1.0);
         let g = cairo::RadialGradient::new(sx, cy, 0.0, sx, cy, 6.0 + 16.0 * e);
         g.add_color_stop_rgba(0.0, col.0, col.1, col.2, 0.9 * alpha);
         g.add_color_stop_rgba(1.0, col.0, col.1, col.2, 0.0);
@@ -1108,7 +1108,7 @@ fn draw_ripple(m: &Model, c: &Context, x: f64, y: f64, w: f64, h: f64, t: f64, a
 
 /// Layers of smooth, translucent rainbow waves flowing across the bar.
 #[allow(clippy::too_many_arguments)]
-fn draw_aurora(m: &Model, c: &Context, x: f64, y: f64, w: f64, h: f64, t: f64, alpha: f64) {
+fn draw_aurora(m: &Model, c: &Context, pal: &Palette, x: f64, y: f64, w: f64, h: f64, t: f64, alpha: f64) {
     let cy = y + h / 2.0;
     let steps = (w / 8.0) as usize;
     c.save().unwrap();
@@ -1139,7 +1139,7 @@ fn draw_aurora(m: &Model, c: &Context, x: f64, y: f64, w: f64, h: f64, t: f64, a
         let g = LinearGradient::new(x, 0.0, x + w, 0.0);
         for s in 0..=6 {
             let f = s as f64 / 6.0;
-            let col = hsv((f * 0.9 + t * 0.04 + lf * 0.23).fract(), 0.7, 1.0);
+            let col = viz_color(m, pal, f * 0.9 + t * 0.04 + lf * 0.23, 0.7, 1.0);
             g.add_color_stop_rgba(f, col.0, col.1, col.2, (0.42 - 0.08 * lf) * alpha);
         }
         c.set_source(&g).unwrap();
@@ -1151,7 +1151,7 @@ fn draw_aurora(m: &Model, c: &Context, x: f64, y: f64, w: f64, h: f64, t: f64, a
 /// An LED matrix in the style of Omarchy's screensaver: square pixels lit in
 /// rainbow gradients, with falling peak pixels over a faint grid.
 #[allow(clippy::too_many_arguments)]
-fn draw_pixels(m: &Model, c: &Context, x: f64, y: f64, w: f64, h: f64, t: f64, alpha: f64) {
+fn draw_pixels(m: &Model, c: &Context, pal: &Palette, x: f64, y: f64, w: f64, h: f64, t: f64, alpha: f64) {
     let cell = 7.0;
     let rows = (h / cell).floor().max(1.0) as usize;
     let cols = (w / cell).floor().max(1.0) as usize;
@@ -1167,9 +1167,9 @@ fn draw_pixels(m: &Model, c: &Context, x: f64, y: f64, w: f64, h: f64, t: f64, a
             let py = oy + (rows - 1 - r) as f64 * cell;
             let (rgb, a) = if r < lit {
                 let v = 0.55 + 0.45 * (r as f64 / rows as f64);
-                (hsv((f * 0.9 + t * 0.06 - r as f64 * 0.02).fract(), 0.8, v), 1.0)
+                (viz_color(m, pal, f * 0.9 + t * 0.06 - r as f64 * 0.02, 0.8, v), 1.0)
             } else if r + 1 == peak_row && peak_row > lit {
-                (hsv((f * 0.9 + t * 0.06).fract(), 0.25, 1.0), 0.85)
+                (viz_color(m, pal, f * 0.9 + t * 0.06, 0.25, 1.0), 0.85)
             } else {
                 (Rgb(1.0, 1.0, 1.0), 0.05)
             };
@@ -1182,7 +1182,7 @@ fn draw_pixels(m: &Model, c: &Context, x: f64, y: f64, w: f64, h: f64, t: f64, a
 
 /// The marquee's comet, full width: rainbow bars over billowing smoke.
 #[allow(clippy::too_many_arguments)]
-fn draw_smoke_bars(m: &Model, c: &Context, x: f64, y: f64, w: f64, h: f64, t: f64, alpha: f64) {
+fn draw_smoke_bars(m: &Model, c: &Context, pal: &Palette, x: f64, y: f64, w: f64, h: f64, t: f64, alpha: f64) {
     let cy = y + h / 2.0;
     c.save().unwrap();
     c.rectangle(x, y, w, h);
@@ -1194,7 +1194,7 @@ fn draw_smoke_bars(m: &Model, c: &Context, x: f64, y: f64, w: f64, h: f64, t: f6
         let px = x + f * w + (t * 0.8 + j as f64 * 1.9).sin() * 12.0;
         let py = cy + (t * 0.6 + j as f64 * 2.7).sin() * 7.0;
         let r = 14.0 + 34.0 * e;
-        let col = hsv((f * 0.85 + t * 0.05 + 0.5).fract(), 0.7, 1.0);
+        let col = viz_color(m, pal, f * 0.85 + t * 0.05 + 0.5, 0.7, 1.0);
         let g = cairo::RadialGradient::new(px, py, 0.0, px, py, r);
         g.add_color_stop_rgba(0.0, col.0, col.1, col.2, (0.26 + 0.45 * e) * alpha);
         g.add_color_stop_rgba(1.0, col.0, col.1, col.2, 0.0);
@@ -1208,11 +1208,49 @@ fn draw_smoke_bars(m: &Model, c: &Context, x: f64, y: f64, w: f64, h: f64, t: f6
         let f = i as f64 / n as f64;
         let e = level_at(&m.bars, f);
         let bh = ((0.12 + 0.88 * e) * h).max(3.0);
-        let col = hsv((f * 0.85 + t * 0.12).fract(), 0.78, 1.0);
+        let col = viz_color(m, pal, f * 0.85 + t * 0.12, 0.78, 1.0);
         c.set_source_rgba(col.0, col.1, col.2, 0.92 * alpha);
         let bw = step * 0.6;
         rounded(c, x + i as f64 * step + (step - bw) / 2.0, cy - bh / 2.0, bw, bh, bw / 2.0);
         c.fill().unwrap();
     }
     c.restore().unwrap();
+}
+
+/// Colour at position `h` (0..1, cycling) for the visualisers: from the
+/// track's artwork palette, the rainbow, or the theme's two accents. `s` and
+/// `v` soften and dim it the way HSV would, so the styles read the same in
+/// every colour mode.
+fn viz_color(m: &Model, pal: &Palette, h: f64, s: f64, v: f64) -> Rgb {
+    let h = h.rem_euclid(1.0);
+    let base = match m.layout.settings.viz_colors.as_str() {
+        "rainbow" => return hsv(h, s, v),
+        "theme" => pal.accent.mix(pal.accent2, 1.0 - (2.0 * h - 1.0).abs()),
+        _ => {
+            let cur = m.palette();
+            if cur.is_empty() {
+                return hsv(h, s, v);
+            }
+            let fade = ((Instant::now() - m.palette_at).as_secs_f64() / 1.5).min(1.0);
+            let now = palette_lerp(&cur, h);
+            if fade < 1.0 && !m.prev_palette.is_empty() {
+                palette_lerp(&m.prev_palette, h).mix(now, fade)
+            } else {
+                now
+            }
+        }
+    };
+    let white = Rgb(1.0, 1.0, 1.0);
+    let b = base.mix(white, ((0.78 - s) / 0.78).clamp(0.0, 1.0));
+    Rgb(b.0 * v, b.1 * v, b.2 * v)
+}
+
+/// Smoothly around a cyclic palette.
+fn palette_lerp(colours: &[String], h: f64) -> Rgb {
+    let n = colours.len();
+    let pos = h * n as f64;
+    let i = pos.floor() as usize % n;
+    let f = pos - pos.floor();
+    let f = f * f * (3.0 - 2.0 * f); // ease between stops
+    Rgb::parse(&colours[i]).mix(Rgb::parse(&colours[(i + 1) % n]), f)
 }

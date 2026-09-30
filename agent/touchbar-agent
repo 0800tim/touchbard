@@ -194,7 +194,8 @@ def build_layout(cfg):
         default = next(iter(layers))
     fn_layer = s.get("fn_key_layer", "function")
     settings = {k: s[k] for k in ("dim_after", "off_after", "max_brightness", "slider_timeout",
-                                  "fingerprint_width", "dim_while_scanning", "visualizers", "nowplaying")
+                                  "fingerprint_width", "dim_while_scanning", "visualizers", "nowplaying",
+                                  "viz_colors")
                 if k in s}
     return {"t": "layout", "layers": layers, "default": default,
             "fn_layer": fn_layer if fn_layer in layers else None, "settings": settings}
@@ -518,6 +519,55 @@ def fetch_weather(wcfg, where):
     else:
         state.update(weather_wind=None)
     return state
+
+
+def art_palette(pb, count=5):
+    """A few vivid colours that carry an image's look, as hex strings.
+
+    Hue buckets weighted by saturation x brightness; each chosen bucket gives
+    its weighted mean colour, pushed bright enough to glow on the Touch Bar.
+    Mostly-one-hue images get tonal variations so the palette still moves."""
+    import colorsys
+    from gi.repository import GdkPixbuf
+    w = 48
+    small = pb.scale_simple(w, max(1, round(pb.get_height() * w / pb.get_width())), GdkPixbuf.InterpType.BILINEAR)
+    data, stride, nch = small.get_pixels(), small.get_rowstride(), small.get_n_channels()
+    bins = [[0.0, 0.0, 0.0, 0.0] for _ in range(24)]  # weight, r, g, b
+    for y in range(small.get_height()):
+        row = y * stride
+        for x in range(small.get_width()):
+            r, g, b = (data[row + x * nch + k] / 255 for k in range(3))
+            hh, ss, vv = colorsys.rgb_to_hsv(r, g, b)
+            if vv < 0.18 or ss < 0.12:
+                continue  # near-black and greys say little about the colour
+            wgt = ss * vv
+            bn = bins[int(hh * 24) % 24]
+            bn[0] += wgt
+            bn[1] += r * wgt
+            bn[2] += g * wgt
+            bn[3] += b * wgt
+    ranked = sorted(range(24), key=lambda i: -bins[i][0])
+    picked = []
+    for i in ranked:
+        if bins[i][0] <= 0 or len(picked) >= count:
+            break
+        if all(min(abs(i - j), 24 - abs(i - j)) >= 2 for j in picked):
+            picked.append(i)
+    total = sum(bins[i][0] for i in range(24)) or 1
+    picked = [i for i in picked if bins[i][0] / total > 0.03] or picked[:1]
+    colours = []
+    for i in picked:
+        wgt, r, g, b = bins[i]
+        hh, ss, vv = colorsys.rgb_to_hsv(r / wgt, g / wgt, b / wgt)
+        colours.append((hh, max(ss, 0.55), max(vv, 0.85)))
+    if not colours:
+        return []
+    # One dominant hue: widen it into neighbouring tones so there's movement.
+    if len(colours) < 3:
+        h0, s0, v0 = colours[0]
+        colours += [((h0 + 0.05) % 1, s0 * 0.8, 1.0), ((h0 - 0.06) % 1, min(1, s0 * 1.15), v0 * 0.85),
+                    ((h0 + 0.1) % 1, s0 * 0.6, 1.0)][:4 - len(colours)]
+    return ["#%02x%02x%02x" % tuple(round(c * 255) for c in colorsys.hsv_to_rgb(*hsv)) for hsv in colours]
 
 
 PREFS = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "touchbar" / "prefs.json"
@@ -1109,6 +1159,7 @@ class Agent:
         self.art_url = url
         if not url:
             self.send({"t": "art", "png": ""})
+            self.push_state(palette=[])
             return
 
         def load():
@@ -1127,6 +1178,7 @@ class Agent:
                 loader.write(data)
                 loader.close()
                 pb = loader.get_pixbuf()
+                palette = art_palette(pb)
                 side = 108
                 scale = side / min(pb.get_width(), pb.get_height())
                 pb = pb.scale_simple(max(1, int(pb.get_width() * scale)), max(1, int(pb.get_height() * scale)),
@@ -1135,9 +1187,10 @@ class Agent:
                 b64 = base64.b64encode(png).decode() if ok else ""
             except Exception as e:  # art is decoration; never let it take the agent down
                 log(f"art: {e}")
-                b64 = ""
+                b64, palette = "", []
             if url == self.art_url:
-                GLib.idle_add(lambda: (self.send({"t": "art", "png": b64}), False)[1])
+                GLib.idle_add(lambda: (self.send({"t": "art", "png": b64}), self.push_state(palette=palette),
+                                       False)[2])
 
         import threading
         threading.Thread(target=load, daemon=True).start()

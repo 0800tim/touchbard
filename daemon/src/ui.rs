@@ -120,6 +120,9 @@ pub struct Model {
     pub title_since: Instant,
     /// Clock for the visualisers' own motion.
     pub epoch: Instant,
+    /// The previous palette and when the current one arrived, for crossfades.
+    pub prev_palette: Vec<String>,
+    pub palette_at: Instant,
     /// Set by the renderer while a long title is scrolling, so frames keep coming.
     pub marquee: std::cell::Cell<bool>,
     grabs: HashMap<u32, Grab>,
@@ -159,6 +162,8 @@ impl Model {
             position_at: now,
             title_since: now,
             epoch: now,
+            prev_palette: vec![],
+            palette_at: now,
             marquee: std::cell::Cell::new(false),
             grabs: HashMap::new(),
             hold: HashMap::new(),
@@ -232,11 +237,24 @@ impl Model {
             if k == "position" {
                 self.position_at = now;
             }
+            if k == "palette" && self.state.get("palette") != Some(&v) {
+                self.prev_palette = self.palette();
+                self.palette_at = now;
+            }
             if k == "title" && self.state.get("title") != Some(&v) {
                 self.title_since = now;
             }
             self.state.insert(k, v);
         }
+    }
+
+    /// The current track's colours, as hex strings (empty without artwork).
+    pub fn palette(&self) -> Vec<String> {
+        self.state
+            .get("palette")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|c| c.as_str().map(String::from)).collect())
+            .unwrap_or_default()
     }
 
     pub fn num(&self, key: &str) -> Option<f64> {

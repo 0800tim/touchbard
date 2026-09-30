@@ -139,6 +139,8 @@ pub struct Settings {
     /// Behind the now-playing title: "bars" (live equaliser), "art" (album
     /// artwork beside the title) or "off".
     pub nowplaying: String,
+    /// Visualiser colours: "music" (from the track's artwork), "rainbow" or "theme".
+    pub viz_colors: String,
 }
 
 impl Default for Settings {
@@ -152,6 +154,7 @@ impl Default for Settings {
             dim_while_scanning: true,
             visualizers: vec!["bars".into()],
             nowplaying: "bars".into(),
+            viz_colors: "music".into(),
         }
     }
 }
