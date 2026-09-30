@@ -547,6 +547,7 @@ fn preview(args: &[String]) -> Result<()> {
             }
             "style" => model.bar_style = v.parse()?,
             "text" => model.text_style = v.parse()?,
+            "sync" => model.sync_open = Some(Instant::now()),
             "nolyrics" => model.no_lyrics_at = Some(Instant::now() - Duration::from_secs_f64(v.parse()?)),
             "toast" => model.toast = Some((v.to_string(), Instant::now() - Duration::from_millis(400))),
             "mood" => model.mood = Some(v.to_string()),

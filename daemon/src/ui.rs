@@ -71,6 +71,8 @@ pub enum Hit {
     /// A segment inside an item: media prev/play/next, or a workspace.
     Sub(usize, u8),
     Overlay(Part),
+    /// A control in the lyrics sync adjuster.
+    Sync(u8),
 }
 
 enum Grab {
@@ -153,6 +155,10 @@ pub struct Model {
     pub toast: Option<(String, Instant)>,
     /// When a karaoke track turned out to have no lyrics: a banner sweeps past once.
     pub no_lyrics_at: Option<Instant>,
+    /// The lyrics sync adjuster is open; last touched then.
+    pub sync_open: Option<Instant>,
+    /// Where the renderer drew the track time (x, width): tapping it opens the adjuster.
+    pub time_rect: std::cell::Cell<(f64, f64)>,
     pub palette_at: Instant,
     /// Set by the renderer while a long title is scrolling, so frames keep coming.
     pub marquee: std::cell::Cell<bool>,
@@ -202,6 +208,8 @@ impl Model {
             text_style: 0,
             toast: None,
             no_lyrics_at: None,
+            sync_open: None,
+            time_rect: std::cell::Cell::new((0.0, 0.0)),
             palette_at: now,
             marquee: std::cell::Cell::new(false),
             grabs: HashMap::new(),
@@ -275,6 +283,13 @@ impl Model {
             }
             if k == "position" {
                 self.position_at = now;
+            }
+            // A message bubble from the agent (e.g. "Thanks, synced lyrics shared").
+            if k == "toast" {
+                if let Some(msg) = v.as_str() {
+                    self.toast = Some((msg.to_string(), now));
+                }
+                continue;
             }
             if k == "lyrics_status" && v.as_str() == Some("none") && self.state.get(&k) != Some(&v) && self.flag("karaoke") {
                 self.no_lyrics_at = Some(now);
@@ -460,6 +475,7 @@ impl Model {
     }
 
     pub fn close_viz(&mut self) -> Vec<Effect> {
+        self.sync_open = None;
         if self.viz.take().is_some() {
             vec![Effect::Send(Outgoing::Set { k: "viz".into(), v: 0.0 })]
         } else {
@@ -512,6 +528,36 @@ impl Model {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// The lyrics sync adjuster's controls, right of the visualiser area:
+    /// (id, x, width) for speedometer, minus, value, plus, reset, share.
+    pub fn sync_parts(&self) -> Vec<(u8, f64, f64)> {
+        let (vx, vw) = self.viz_area();
+        let widths = [70.0, 80.0, 170.0, 80.0, 110.0, 120.0];
+        let total: f64 = widths.iter().sum::<f64>() + SPACING * (widths.len() - 1) as f64;
+        let mut x = vx + vw - total - 8.0;
+        widths
+            .iter()
+            .enumerate()
+            .map(|(i, w)| {
+                let r = (i as u8, x, *w);
+                x += w + SPACING;
+                r
+            })
+            .collect()
+    }
+
+    /// Lyrics offset in seconds: + shows them earlier, - later.
+    pub fn lyrics_offset(&self) -> f64 {
+        self.num("lyrics_offset").unwrap_or(0.0)
+    }
+
+    fn set_lyrics_offset(&mut self, v: f64, now: Instant) -> Effect {
+        let v = (v * 10.0).round() / 10.0;
+        self.state.insert("lyrics_offset".into(), Value::from(v));
+        self.hold.insert("lyrics_offset".into(), now + STATE_HOLD);
+        Effect::Send(Outgoing::Set { k: "lyrics_offset".into(), v })
     }
 
     /// Seconds into the "No lyrics available" banner, while it's sweeping past.
@@ -610,6 +656,10 @@ impl Model {
                 changed = true;
             }
         }
+        if self.sync_open.is_some_and(|t| now - t > Duration::from_secs(6)) {
+            self.sync_open = None;
+            changed = true;
+        }
         // The volume control over the visualiser tucks itself away when left alone.
         let adjusting = self.grabs.values().any(|g| matches!(g, Grab::Volume));
         if let Some(v) = &mut self.viz {
@@ -644,6 +694,7 @@ impl Model {
             || (self.viz.is_some() && self.flag("playing"))
             || self.marquee.get()
             || self.toast.is_some()
+            || self.sync_open.is_some()
             || self.no_lyrics_banner(now).is_some()
             || (self.karaoke_active() && self.flag("playing"))
             || self.surfaces.values().any(|(_, t)| now - *t < PIXELS_STALE)
@@ -831,6 +882,7 @@ impl Model {
                 .into_iter()
                 .find(|(q, _, _)| *q == p)
                 .map(|(_, x, w)| (x, w)),
+            Hit::Sync(id) => self.sync_parts().into_iter().find(|(i, _, _)| *i == id).map(|(_, x, w)| (x, w)),
         }
     }
 
@@ -884,6 +936,13 @@ impl Model {
                 }
                 Grab::Press { hit, keys: vec![], act: None, inside: true, tap: None }
             }
+            Hit::Overlay(Part::Viz) if self.sync_open.is_some() && self.sync_parts().iter().any(|(_, px, pw)| x >= *px && x < px + pw) => {
+                let id = self.sync_parts().into_iter().find(|(_, px, pw)| x >= *px && x < px + pw).map(|p| p.0).unwrap_or(0);
+                self.sync_open = Some(now);
+                let hit = Hit::Sync(id);
+                self.press(hit, true);
+                Grab::Press { hit, keys: vec![], act: None, inside: true, tap: None }
+            }
             Hit::Overlay(Part::Viz) if self.viz.as_ref().is_some_and(|v| v.volume.is_some()) => {
                 fx.push(self.set_volume_at(x));
                 Grab::Volume
@@ -896,7 +955,7 @@ impl Model {
                 self.press(hit, true);
                 Grab::Press { hit, keys: vec![], act: None, inside: true, tap: None }
             }
-            Hit::Overlay(_) => Grab::Ignore,
+            Hit::Overlay(_) | Hit::Sync(_) => Grab::Ignore,
             Hit::Sub(n, part) => {
                 let item = self.items()[n].clone();
                 if item.kind == Kind::Media {
@@ -1045,6 +1104,16 @@ impl Model {
                             fx.push(Effect::Send(Outgoing::Set { k: "viz_mood".into(), v: next as f64 }));
                         }
                         Hit::Overlay(Part::Karaoke) => fx.extend(self.toggle_karaoke(now)),
+                        Hit::Sync(id) => {
+                            let off = self.lyrics_offset();
+                            match id {
+                                1 => fx.push(self.set_lyrics_offset(off - 0.1, now)),
+                                3 => fx.push(self.set_lyrics_offset(off + 0.1, now)),
+                                4 => fx.push(self.set_lyrics_offset(0.0, now)),
+                                5 => fx.push(Effect::Send(Outgoing::Set { k: "lyrics_share".into(), v: off })),
+                                _ => {}
+                            }
+                        }
                         Hit::Overlay(Part::Volume) => {
                             if let Some(v) = &mut self.viz {
                                 v.volume = if v.volume.is_some() { None } else { Some(now) };
@@ -1096,8 +1165,14 @@ impl Model {
                     s.close_at = Some(now + Duration::from_millis(1200));
                 }
             }
-            Some(Grab::Scrub { moved, .. }) => {
+            Some(Grab::Scrub { moved, start_x }) => {
                 let target = self.viz.as_mut().and_then(|v| v.scrub.take());
+                // A tap on the track time opens the lyrics sync adjuster.
+                let (tx, tw) = self.time_rect.get();
+                if !moved && tw > 0.0 && start_x >= tx - 6.0 && start_x <= tx + tw + 6.0 {
+                    self.sync_open = if self.sync_open.is_some() { None } else { Some(now) };
+                    return fx;
+                }
                 match (moved, target) {
                     (true, Some(pos)) => {
                         self.state.insert("position".into(), Value::from(pos));

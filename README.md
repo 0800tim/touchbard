@@ -25,6 +25,8 @@ A themed, macOS-style Touch Bar for Apple Touch Bar MacBooks running Linux. It h
 
 - **Karaoke:** the 🎤 button (in full-screen mode, or the `karaoke` preset) swaps the title for time-synced lyrics from [LRCLIB](https://lrclib.net), the free source fm.video uses. The current line fills in as it's sung and the strip scrolls across with the song. It works with any player (Spotify, YouTube, fm.video) and follows seeks.
 
+- **Lyrics sync adjuster:** tap the track time in full-screen mode (a speedometer marks it when there are lyrics) to nudge the lyrics ±0.1 s while they play beside the controls. The correction is remembered per track. **Share** (only when you tap it) publishes the corrected timing back to LRCLIB, so the fix reaches everyone who uses it, fm.video included.
+
 - **Weather:** conditions icon (sun, moon, cloud, fog, drizzle, rain, sleet, snow, hail, thunderstorm, high wind), temperature, and a wind arrow with the speed in km/h, knots, mph or m/s. Tap it for feels-like, today's range and the next 12 hours. Data comes from [Open-Meteo](https://open-meteo.com) (no key needed). Units follow the location's country unless you set them.
 
   ![Weather](docs/weather.png)

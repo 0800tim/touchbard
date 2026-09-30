@@ -467,11 +467,17 @@ def weather_units(wcfg, country=None):
     return ("fahrenheit" if temp == "f" else "celsius"), (wind if wind in WIND_UNITS else "kmh")
 
 
-def http_json(url, timeout=8):
+def http_json(url, timeout=8, method="GET", headers=None, body=None):
     import urllib.request
-    req = urllib.request.Request(url, headers={"User-Agent": "touchbard (github.com/0800tim/touchbard)"})
+    hdrs = {"User-Agent": "touchbard (github.com/0800tim/touchbard)", **(headers or {})}
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode()
+        hdrs["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read(2 << 20))
+        raw = r.read(2 << 20)
+        return json.loads(raw) if raw.strip() else {}
 
 
 def weather_location(wcfg):
@@ -684,7 +690,7 @@ def fetch_lyrics(title, artist, length):
     t, a = clean_track(title, artist)
     if not t:
         return []
-    key = hashlib.sha1(f"{a}|{t}|{round(length or 0)}".encode()).hexdigest()[:20]
+    key = lyrics_key(title, artist, length)
     cache = LYRICS_CACHE / f"{key}.json"
     try:
         return json.loads(cache.read_text())
@@ -717,9 +723,78 @@ def fetch_lyrics(title, artist, length):
     try:
         LYRICS_CACHE.mkdir(parents=True, exist_ok=True)
         cache.write_text(json.dumps(lines))
+        if found:
+            # What LRCLIB needs to take a timing fix back: the track as it knows it.
+            meta = {k: found.get(k) for k in ("trackName", "artistName", "albumName", "duration")}
+            meta["synced"] = bool(found.get("syncedLyrics"))
+            (LYRICS_CACHE / f"{key}.meta.json").write_text(json.dumps(meta))
     except OSError:
         pass
     return lines
+
+
+def lyrics_key(title, artist, length):
+    import hashlib
+    t, a = clean_track(title, artist)
+    return hashlib.sha1(f"{a}|{t}|{round(length or 0)}".encode()).hexdigest()[:20]
+
+
+OFFSETS = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "touchbar" / "lyric-offsets.json"
+
+
+def load_offsets():
+    try:
+        return json.loads(OFFSETS.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def save_offset(key, offset):
+    offsets = load_offsets()
+    if abs(offset) < 0.05:
+        offsets.pop(key, None)
+    else:
+        offsets[key] = round(offset, 2)
+    OFFSETS.parent.mkdir(parents=True, exist_ok=True)
+    OFFSETS.write_text(json.dumps(offsets, indent=0))
+
+
+def lrc_time(t):
+    t = max(0.0, t)
+    return f"[{int(t // 60):02d}:{t % 60:05.2f}]"
+
+
+def share_lyrics_fix(key, lines, offset):
+    """Publish corrected timing to LRCLIB, the community database the lyrics
+    came from (and fm.video reads), so the fix reaches everyone. Only ever
+    called from an explicit Share tap. Returns a message for the bubble."""
+    import hashlib
+    try:
+        meta = json.loads((LYRICS_CACHE / f"{key}.meta.json").read_text())
+    except (OSError, ValueError):
+        return "Can't share: re-open the song first"
+    if not meta.get("synced"):
+        return "Can't share: these lyrics weren't synced"
+    if not all(meta.get(k) for k in ("trackName", "artistName", "albumName", "duration")):
+        return "Can't share: LRCLIB's track details are incomplete"
+    # The daemon shows a line when position + offset reaches its time, so the
+    # corrected timestamp is the old one minus the offset.
+    synced = "\n".join(f"{lrc_time(t - offset)} {line}" for t, line in lines)
+    plain = "\n".join(line for _, line in lines)
+    try:
+        ch = http_json(f"{LRCLIB}/request-challenge", method="POST")
+        prefix, target = ch["prefix"], bytes.fromhex(ch["target"])
+        nonce = 0
+        while hashlib.sha256(f"{prefix}{nonce}".encode()).digest() > target:  # proof of work
+            nonce += 1
+        http_json(f"{LRCLIB}/publish", method="POST", headers={"X-Publish-Token": f"{prefix}:{nonce}"},
+                  body={"trackName": meta["trackName"], "artistName": meta["artistName"],
+                        "albumName": meta["albumName"], "duration": meta["duration"],
+                        "plainLyrics": plain, "syncedLyrics": synced})
+    except Exception as e:
+        log(f"lyrics share: {e}")
+        return "Couldn't share just now"
+    return "Thanks, synced lyrics shared"
 
 
 PREFS = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "touchbar" / "prefs.json"
@@ -991,6 +1066,22 @@ class Agent:
             n = int(float(msg["v"]))
             self.state[msg["k"]] = self.sent_state[msg["k"]] = n
             save_prefs({msg["k"]: n})
+        elif t == "set" and msg.get("k") == "lyrics_offset":
+            # Remembered per track, so the song stays in sync next time.
+            v = round(float(msg["v"]), 2)
+            self.state["lyrics_offset"] = self.sent_state["lyrics_offset"] = v
+            if getattr(self, "lyrics_store_key", None):
+                save_offset(self.lyrics_store_key, v)
+        elif t == "set" and msg.get("k") == "lyrics_share":
+            key, lines, offset = getattr(self, "lyrics_store_key", None), getattr(self, "lyrics_lines", []), float(msg["v"])
+            if not key or not lines or abs(offset) < 0.05:
+                self.send({"t": "state", "toast": "Nothing to share: adjust the sync first"})
+            else:
+                self.send({"t": "state", "toast": "Sharing the fix with LRCLIB…"})
+                import threading
+                threading.Thread(target=lambda: (lambda r: GLib.idle_add(
+                    lambda: (self.send({"t": "state", "toast": r}), False)[1]))(share_lyrics_fix(key, lines, offset)),
+                    daemon=True).start()
         elif t == "set" and msg.get("k") == "tb_level":
             v = max(0.03, min(1.0, float(msg["v"])))
             self.state["tb_level"] = self.sent_state["tb_level"] = v
@@ -1382,7 +1473,10 @@ class Agent:
         if key == self.lyrics_key:
             return
         self.lyrics_key = key
-        self.push_state(lyrics=[], lyrics_status="searching" if m.get("title") else "none")
+        self.lyrics_store_key = lyrics_key(m.get("title"), m.get("artist"), m.get("length")) if m.get("title") else None
+        self.lyrics_lines = []
+        offset = load_offsets().get(self.lyrics_store_key, 0.0) if self.lyrics_store_key else 0.0
+        self.push_state(lyrics=[], lyrics_status="searching" if m.get("title") else "none", lyrics_offset=offset)
         if not m.get("title"):
             return
         import threading
@@ -1391,6 +1485,7 @@ class Agent:
             lines = fetch_lyrics(m.get("title"), m.get("artist"), m.get("length"))
             if key == self.lyrics_key:
                 status = "found" if lines else "none"
+                self.lyrics_lines = lines
                 GLib.idle_add(lambda: (self.push_state(lyrics=lines, lyrics_status=status), False)[1])
         threading.Thread(target=work, daemon=True).start()
 

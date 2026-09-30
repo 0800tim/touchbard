@@ -830,6 +830,14 @@ fn draw_viz(m: &Model, p: &Painter, pal: &Palette, v: &VizOverlay, now: Instant)
                 };
                 let pos = m.position(now);
                 let shown = v.scrub.zip(pos.map(|(_, l)| l)).or(pos);
+                // With the sync adjuster open, lyrics play on the left of it.
+                let (x, w) = match m.sync_open.and(m.sync_parts().first().map(|p| p.1)) {
+                    Some(sx) => {
+                        draw_sync(m, p, pal, now);
+                        (x, (sx - x - 12.0).max(40.0))
+                    }
+                    None => (x, w),
+                };
                 let time_w = shown.map_or(0.0, |(pos, len)| {
                     p.text_width(&format!("{} / {}", fmt_time(pos), fmt_time(len)), 18.0, true) + 36.0
                 });
@@ -847,14 +855,24 @@ fn draw_viz(m: &Model, p: &Painter, pal: &Palette, v: &VizOverlay, now: Instant)
                 }
                 if let Some((pos, len)) = shown {
                     // The track time steps aside while the volume control is open.
-                    if v.volume.is_none() {
+                    if v.volume.is_none() && m.sync_open.is_none() {
                         let t = format!("{} / {}", fmt_time(pos), fmt_time(len));
                         let tw = p.text_width(&t, 18.0, true);
+                        // With lyrics, a speedometer says: tap here to adjust their sync.
+                        let hint = if m.karaoke_active() { 22.0 } else { 0.0 };
+                        let (bx, bw) = (x + w - tw - 28.0 - hint, tw + 20.0 + hint);
+                        m.time_rect.set((bx, bw));
                         pal.bg.set_a(c, 0.55);
-                        rounded(c, x + w - tw - 28.0, y + 5.0, tw + 20.0, 28.0, 8.0);
+                        rounded(c, bx, y + 5.0, bw, 28.0, 8.0);
                         c.fill().unwrap();
+                        if hint > 0.0 {
+                            pal.accent.set(c);
+                            p.text("\u{F04C5}", 17.0, false, bx + 17.0, y + 19.0, None);
+                        }
                         (if v.scrub.is_some() { pal.accent } else { pal.fg }).set(c);
                         p.text(&t, 18.0, true, x + w - 18.0 - tw / 2.0, y + 19.0, None);
+                    } else {
+                        m.time_rect.set((0.0, 0.0));
                     }
                     // Progress along the bottom edge; thicker, with a glowing knob, while scrubbing.
                     let th = if v.scrub.is_some() { 7.0 } else { 4.0 };
@@ -1935,6 +1953,7 @@ fn draw_lyrics(m: &Model, p: &Painter, pal: &Palette, x: f64, w: f64, cy: f64, p
     let c = p.c;
     let lines = m.lyrics();
     let Some((pos, len)) = m.position(now) else { return };
+    let pos = pos + m.lyrics_offset(); // the sync adjuster's correction for this track
     if lines.is_empty() || w <= 0.0 {
         return;
     }
@@ -2456,4 +2475,62 @@ fn draw_no_lyrics(m: &Model, pal: &Palette, c: &Context, x: f64, w: f64, cy: f64
         }
     }
     c.restore().unwrap();
+}
+
+/// The lyrics sync adjuster: speedometer, minus, offset, plus, reset, share.
+fn draw_sync(m: &Model, p: &Painter, pal: &Palette, now: Instant) {
+    let c = p.c;
+    let off = m.lyrics_offset();
+    let t = (now - m.epoch).as_secs_f64();
+    let cy = m.h / 2.0;
+    for (id, x, w) in m.sync_parts() {
+        let pl = press_level(m, Hit::Sync(id), now);
+        let fill = pal.surface.mix(pal.accent, 0.45 * pl);
+        let two_line = |big: &str, small: &str, ink: Rgb| {
+            ink.set(c);
+            p.text(big, 26.0, true, x + w / 2.0, cy - 7.0, None);
+            pal.fg_dim.set(c);
+            p.text(small, 12.0, true, x + w / 2.0, cy + 15.0, None);
+        };
+        match id {
+            0 => {
+                // The speedometer, in the mood's colours.
+                let g = LinearGradient::new(x, 0.0, x + w, 0.0);
+                for k in 0..=2 {
+                    let col = viz_color(m, pal, k as f64 * 0.35 + t * 0.05, 0.85, 1.0);
+                    g.add_color_stop_rgb(k as f64 / 2.0, col.0, col.1, col.2);
+                }
+                c.set_source(&g).unwrap();
+                p.text("\u{F04C5}", ICON_PX, false, x + w / 2.0, cy, None);
+                c.new_path();
+            }
+            1 => {
+                p.pill(x, w, fill);
+                two_line("−", "later", pal.fg);
+            }
+            2 => {
+                pal.bg.set_a(c, 0.55);
+                rounded(c, x, MARGIN_Y, w, m.h - 2.0 * MARGIN_Y, RADIUS);
+                c.fill().unwrap();
+                let hint = if off.abs() < 0.05 { "in sync" } else if off > 0.0 { "lyrics earlier" } else { "lyrics later" };
+                two_line(&format!("{:+.1} s", off), hint, if off.abs() < 0.05 { pal.fg } else { pal.accent });
+            }
+            3 => {
+                p.pill(x, w, fill);
+                two_line("+", "earlier", pal.fg);
+            }
+            4 => {
+                p.pill(x, w, fill);
+                p.content(Some("\u{F0450}"), None, x, w * 0.45, pal.fg);
+                pal.fg.set(c);
+                p.text("Reset", 16.0, true, x + w * 0.66, cy, None);
+            }
+            _ => {
+                p.pill(x, w, fill);
+                p.content(Some("\u{F0167}"), None, x + 4.0, w * 0.36, pal.fg);
+                pal.fg.set(c);
+                p.text("Share", 16.0, true, x + w * 0.7, cy, None);
+            }
+        }
+    }
 }
