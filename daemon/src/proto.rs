@@ -148,7 +148,7 @@ impl Default for Settings {
             off_after: 60,
             max_brightness: 160,
             slider_timeout: 5,
-            fingerprint_width: 330.0,
+            fingerprint_width: 440.0,
             dim_while_scanning: true,
             visualizers: vec!["bars".into()],
             nowplaying: "bars".into(),
@@ -206,6 +206,9 @@ pub enum FingerState {
     Retry,
     Match,
     Fail,
+    /// Touch ID can't be used right now (e.g. locked out after too many
+    /// wrong fingers, or a driver error): the password prompt takes over.
+    Error,
 }
 
 #[derive(Serialize, Debug)]

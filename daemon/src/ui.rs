@@ -430,6 +430,7 @@ impl Model {
             FingerState::Scan => Some(Duration::from_secs(35)),
             FingerState::Match => Some(Duration::from_millis(1100)),
             FingerState::Fail => Some(Duration::from_millis(1600)),
+            FingerState::Error => Some(Duration::from_millis(3500)),
             _ => None,
         };
         if limit.is_some_and(|l| now - f.since > l) {

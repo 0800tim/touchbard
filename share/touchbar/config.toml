@@ -48,7 +48,7 @@ dim_after = 30               # seconds of no input before the bar dims
 off_after = 60               # ...and turns off (touch it to wake)
 max_brightness = 160         # 0–255; the bar follows your screen brightness up to this
 slider_timeout = 5           # seconds before an opened slider tucks itself away
-fingerprint_width = 330      # width of the Touch ID prompt at the right end
+fingerprint_width = 440      # width of the Touch ID prompt at the right end
 dim_while_scanning = true    # fade the rest of the bar while Touch ID waits
 nowplaying = "bars"          # behind the track title: "bars" (equaliser), "art" (album cover) or "off"
 

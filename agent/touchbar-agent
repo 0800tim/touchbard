@@ -1232,8 +1232,8 @@ class Agent:
             elif result in ("verify-retry-scan", "verify-swipe-too-short", "verify-finger-not-centered",
                             "verify-remove-and-retry"):
                 s = "retry"
-            else:  # disconnected, unknown-error
-                s = "idle"
+            else:  # unknown-error (e.g. locked out after too many wrong fingers), disconnected
+                s = "error"
             self.send({"t": "fingerprint", "s": s})
 
 

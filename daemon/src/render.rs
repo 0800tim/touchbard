@@ -514,6 +514,7 @@ fn draw_finger(m: &Model, p: &Painter, pal: &Palette, alpha: f64, now: Instant) 
     let (color, title, icon) = match state {
         FingerState::Match => (pal.green, "Unlocked", "󰄬"),
         FingerState::Fail => (pal.red, "Not recognised", "󰈷"),
+        FingerState::Error => (pal.red, "Use password", "\u{F033E}"),
         _ => {
             let retrying = f.retry_at.is_some_and(|r| (now - r).as_secs_f64() < 1.6);
             if retrying {
@@ -570,8 +571,9 @@ fn draw_finger(m: &Model, p: &Painter, pal: &Palette, alpha: f64, now: Instant) 
     p.text(icon, 46.0, false, icon_cx, cy, None);
 
     pal.fg.set(c);
-    let tw = p.text_width(title, LABEL_PX, true);
-    p.text(title, LABEL_PX, true, icon_cx - 48.0 - tw / 2.0 + shake, cy, None);
+    // Its own size: the prompt's width is fixed, the button labels aren't.
+    let tw = p.text_width(title, 26.0, true);
+    p.text(title, 26.0, true, icon_cx - 48.0 - tw / 2.0 + shake, cy, None);
 
     // Chevrons: a wave of brightness running towards the sensor.
     if matches!(state, FingerState::Scan) {
