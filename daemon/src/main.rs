@@ -7,6 +7,7 @@
 mod fallback;
 mod hw;
 mod proto;
+mod record;
 mod render;
 mod ui;
 
@@ -18,7 +19,7 @@ use input::event::{DeviceEvent, Event, EventTrait, KeyboardEvent};
 use input::{Libinput, LibinputInterface};
 use input_linux::Key;
 use proto::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
@@ -57,6 +58,8 @@ struct Client {
     is_agent: bool,
     /// A frame header waiting for its payload: (plugin id, width, height, bytes).
     pending: Option<(String, u32, u32, usize)>,
+    /// Set once the client asked to record the bar.
+    rec: Option<record::Recorder>,
 }
 
 /// Turn a plugin's raw BGRA frame into a surface we can draw.
@@ -193,6 +196,8 @@ fn run() -> Result<()> {
     let mut last_minute = chrono::Local::now().format("%H%M").to_string();
     let mut swallowed: HashSet<u32> = HashSet::new();
     let mut digitizer: Option<input::Device> = None;
+    // Finger positions, drawn into recordings only.
+    let mut touches: HashMap<u32, f64> = HashMap::new();
     let debug = std::env::var_os("TOUCHBARD_DEBUG").is_some();
 
     eprintln!("touchbard: {}x{} panel ready", out.dev_w, out.dev_h);
@@ -248,6 +253,9 @@ fn run() -> Result<()> {
             frame.flush();
             if let Err(e) = out.present(&mut frame) {
                 eprintln!("present: {e:#}");
+            }
+            for r in clients.iter().filter_map(|c| c.rec.as_ref()) {
+                r.write(&frame, &touches);
             }
             dirty = false;
         }
@@ -365,21 +373,25 @@ fn run() -> Result<()> {
                                 // First touch on a dark bar only wakes it.
                                 swallowed.insert(d.seat_slot());
                             } else {
+                                touches.insert(d.seat_slot(), d.x_transformed(w));
                                 effects.extend(model.touch_down(d.seat_slot(), d.x_transformed(w)));
                             }
                         }
                         TouchEvent::Motion(m) => {
                             if !swallowed.contains(&m.seat_slot()) {
+                                touches.insert(m.seat_slot(), m.x_transformed(w));
                                 effects.extend(model.touch_motion(m.seat_slot(), m.x_transformed(w)));
                             }
                         }
                         TouchEvent::Up(u) => {
+                            touches.remove(&u.seat_slot());
                             if !swallowed.remove(&u.seat_slot()) {
                                 effects.extend(model.touch_up(u.seat_slot()));
                             }
                         }
                         TouchEvent::Cancel(c) => {
                             swallowed.remove(&c.seat_slot());
+                            touches.remove(&c.seat_slot());
                             effects.extend(model.touch_up(c.seat_slot()));
                         }
                         _ => {}
@@ -406,7 +418,7 @@ fn run() -> Result<()> {
                             hello.push(b'\n');
                             let mut stream = stream;
                             let _ = stream.write_all(&hello);
-                            clients.push(Client { stream, uid, buf: vec![], is_agent: false, pending: None });
+                            clients.push(Client { stream, uid, buf: vec![], is_agent: false, pending: None, rec: None });
                         }
                         // Dropping the stream closes it: not the session owner.
                         _ => eprintln!("touchbard: refused connection from uid {uid:?}"),
@@ -479,6 +491,17 @@ fn run() -> Result<()> {
                             Incoming::Bars { v } => model.set_bars(v),
                             Incoming::Art { png } => model.art = decode_art(&png),
                             Incoming::Pixels { id, w, h, len } => clients[i].pending = Some((id, w, h, len)),
+                            Incoming::Record => {
+                                let r = record::Recorder::new(w as i32, h as i32)
+                                    .and_then(|r| r.send(&clients[i].stream).map(|_| r));
+                                match r {
+                                    Ok(r) => {
+                                        r.write(&frame, &touches);
+                                        clients[i].rec = Some(r);
+                                    }
+                                    Err(e) => eprintln!("record: {e:#}"),
+                                }
+                            }
                         }
                     }
                     Err(e) => eprintln!("bad message: {e}"),

@@ -199,6 +199,8 @@ pub enum Incoming {
         h: u32,
         len: usize,
     },
+    /// Stream the bar to this client (see record.rs); stops when it disconnects.
+    Record,
 }
 
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]

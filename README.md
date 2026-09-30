@@ -75,6 +75,7 @@ It's cheap to run: every effect draws in about 1–3 ms a frame, capped at 30 fp
 - **Theme colours** follow your Omarchy theme live.
 - **Optional extras:** a workspaces strip, per-app layers, a clock, battery, and your own buttons for any command or key chord.
 - **Plugins:** anything that can print JSON can draw on the bar (see below).
+- **🎬 Record it:** the Touch Bar isn't a monitor your screen recorder can see, so touchbard records itself. `touchbar-agent record` captures the bar at full resolution with a soft dot under each finger and whatever's playing, into `~/Videos/touchbar-*.mp4`. Run it again (or Ctrl-C) to stop, or give a length: `touchbar-agent record 20`. Put it on a key or a bar button to toggle it.
 - **Power:** it follows the screen brightness, dims after 30 s, turns off after 60 s and on lid close, and a touch wakes it.
 
 ## Compatibility

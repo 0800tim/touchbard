@@ -16,6 +16,9 @@ Usage:
   touchbar-agent --dump-layout    print the expanded layout as JSON
   touchbar-agent --dump-theme     print the theme message as JSON
   touchbar-agent --layer NAME     switch the bar to a layer
+  touchbar-agent record [SECS] [-o FILE] [--no-audio]
+                                  record the bar (and what's playing) to an
+                                  MP4 in ~/Videos; run it again to stop
 """
 
 import json
@@ -835,6 +838,133 @@ def one_shot(msg):
     s.close()
 
 
+def record(argv):
+    """Record the Touch Bar to an MP4. It isn't a Wayland output, so screen
+    recorders can't see it: touchbard shares its latest frame in a memfd
+    (see daemon/src/record.rs) and we sample it at 30 fps into ffmpeg, with
+    the desktop audio and a dot under each finger."""
+    import mmap
+    import struct
+    import time
+
+    pidfile = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "touchbar-record.pid"
+    quiet = not sys.stdout.isatty()
+
+    def say(msg):
+        print(msg)
+        if quiet:
+            subprocess.run(["notify-send", "-a", "Touch Bar", msg], stderr=subprocess.DEVNULL)
+
+    # A second run stops the first, so one key or button toggles recording.
+    try:
+        os.kill(int(pidfile.read_text()), signal.SIGINT)
+        say("Stopping the Touch Bar recording")
+        return
+    except (OSError, ValueError):
+        pass
+
+    secs, out, audio = None, None, True
+    args = list(argv)
+    while args:
+        a = args.pop(0)
+        if a == "-o" and args:
+            out = args.pop(0)
+        elif a == "--no-audio":
+            audio = False
+        elif re.fullmatch(r"\d+(\.\d+)?", a):
+            secs = float(a)
+        else:
+            sys.exit("usage: touchbar-agent record [SECS] [-o FILE] [--no-audio]")
+    out = Path(out or Path.home() / "Videos" / time.strftime("touchbar-%Y%m%d-%H%M%S.mp4"))
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.connect(SOCKET)
+    s.sendall(b'{"t":"record"}\n')
+    s.settimeout(3)
+    buf, fd, info = b"", None, None
+    try:
+        while info is None:
+            data, fds, _, _ = socket.recv_fds(s, 65536, 1)
+            if not data:
+                sys.exit("touchbard closed the connection")
+            fd = fds[0] if fds else fd
+            buf += data
+            while b"\n" in buf and info is None:
+                line, buf = buf.split(b"\n", 1)
+                try:
+                    m = json.loads(line)
+                except ValueError:
+                    continue
+                if m.get("t") == "record":
+                    info = m
+    except TimeoutError:
+        sys.exit("touchbard didn't answer; it may predate recording (reinstall it)")
+    if fd is None:
+        sys.exit("touchbard sent no frame buffer")
+    w, h, off, stride = info["w"], info["h"], info["offset"], info["stride"]
+    size = stride * h
+    shm = mmap.mmap(fd, off + size, prot=mmap.PROT_READ)
+    os.close(fd)
+
+    # Keep reading the socket (the daemon also broadcasts state to us) so it
+    # never backs up; the daemon going away ends the recording.
+    import threading
+    gone = threading.Event()
+
+    def drain():
+        s.settimeout(None)
+        try:
+            while s.recv(65536):
+                pass
+        except OSError:
+            pass
+        gone.set()
+    threading.Thread(target=drain, daemon=True).start()
+
+    def grab():
+        # Seqlock: odd while touchbard is writing a frame.
+        while True:
+            a = struct.unpack_from("<Q", shm, 16)[0]
+            if not a & 1:
+                f = shm[off:off + size]
+                if struct.unpack_from("<Q", shm, 16)[0] == a:
+                    return f
+            time.sleep(0.001)
+
+    cmd = ["ffmpeg", "-loglevel", "error", "-y",
+           "-f", "rawvideo", "-pix_fmt", "bgra", "-s", f"{stride // 4}x{h}", "-framerate", "30", "-i", "-"]
+    if audio:
+        cmd += ["-thread_queue_size", "1024", "-f", "pulse", "-i", "@DEFAULT_MONITOR@", "-c:a", "aac", "-b:a", "192k"]
+    cmd += ["-vf", f"crop={w}:{h}:0:0,format=yuv420p", "-c:v", "libx264", "-preset", "veryfast",
+            "-crf", "16", "-shortest", "-movflags", "+faststart", str(out)]
+    # Its own session, so Ctrl-C reaches only us and we finish the file cleanly.
+    ff = subprocess.Popen(cmd, stdin=subprocess.PIPE, start_new_session=True)
+
+    pidfile.write_text(str(os.getpid()))
+    say("Recording the Touch Bar" + (f" for {secs:g} s" if secs else "; run it again or Ctrl-C to stop"))
+    t0, n = time.monotonic(), 0
+    try:
+        while (secs is None or n < secs * 30) and not gone.is_set() and ff.poll() is None:
+            wait = t0 + n / 30 - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+            ff.stdin.write(grab())
+            n += 1
+    except (KeyboardInterrupt, BrokenPipeError):
+        pass
+    finally:
+        pidfile.unlink(missing_ok=True)
+    try:
+        ff.stdin.close()
+    except BrokenPipeError:
+        pass
+    if ff.wait() == 0:
+        say(f"Saved {out} ({n / 30:.1f} s)")
+    else:
+        sys.exit("ffmpeg failed")
+
+
 if __name__ == "__main__" and len(sys.argv) > 1:
     arg = sys.argv[1]
     if arg == "--dump-layout":
@@ -878,6 +1008,8 @@ if __name__ == "__main__" and len(sys.argv) > 1:
         subprocess.run(["systemctl", "--user", "kill", "--signal=USR1", "touchbar-agent.service"],
                        stderr=subprocess.DEVNULL)
         print(f"equaliser {'on' if on else 'off'}")
+    elif arg == "record":
+        record(sys.argv[2:])
     elif arg == "--layer" and len(sys.argv) > 2:
         one_shot({"t": "layer", "name": sys.argv[2]})
     else:
