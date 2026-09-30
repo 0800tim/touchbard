@@ -1,40 +1,81 @@
-# touchbard
+# touchbard 🎤✨
 
-A themed, macOS-style Touch Bar for Apple Touch Bar MacBooks running Linux. It has sliders, a live equaliser, a Touch ID prompt that points at the sensor, and colours that follow your desktop theme. It has first-class support for [Omarchy](https://omarchy.org) and Hyprland, and works without them.
+**Turn your MacBook's Touch Bar into a karaoke lyrics player and music visualiser.**
+
+Play anything on **Spotify, YouTube Music, YouTube, [fm.video](https://fm.video)**, or any app that broadcasts its song over MPRIS (most Linux players and every Chromium browser do). Your Touch Bar lights up with the track's artwork, a live equaliser dancing to the actual audio, and **time-synced lyrics that fill in as they're sung**. Words sparkle, bounce to the beat, and burst into sparks as the song moves on. The colours come straight from the song's own artwork.
+
+![Karaoke lyrics exploding into sparks](docs/hero.png)
+
+It's a full Touch Bar too, with sliders, weather, F-keys and a Touch ID prompt, for Apple Touch Bar MacBooks running Linux. It has first-class support for [Omarchy](https://omarchy.org) and Hyprland.
+
+## 🎶 The music player
+
+**Now playing, always:** the artwork, the title (which scrolls smoothly when it's long) and a live spectrum behind it. Tap the title to go full screen.
+
+![Now playing](docs/nowplaying.png)
+
+**🎤 Karaoke mode:** tap the mic and the title becomes the song's lyrics, **timed to the music**. The line being sung lights up left to right, the classic karaoke wipe, and the strip glides on to the next line. Lyrics come from [LRCLIB](https://lrclib.net), the free community database fm.video uses, so they work for almost anything you play. Seek, and the lyrics jump with you.
+
+![Karaoke](docs/karaoke.png)
+
+**Lyrics a little off?** Tap the ⏱ time to open the **sync adjuster**. Nudge the lyrics ±0.1 s while you watch them play. The fix is remembered for that song, and **Share** sends it back to LRCLIB so everyone gets the corrected timing.
+
+![Lyrics sync adjuster](docs/sync.png)
+
+**A light show, your way.** Three buttons mix three independent choices, all driven by the live audio and its beat:
+
+- **✨ 7 visualisers:** mirrored bars, falling peaks, dots, rainbow **ripples**, flowing **aurora** waves, an LED **pixel** matrix, and a smoky rainbow **comet**.
+- **🎨 9 colour moods:**
+  - **Music**, which takes its palette from the song's artwork (or live from the video) and crossfades between songs
+  - Mono, Smoke, Amethyst, Matrix, Disco and Rasta
+  - Rainbow, and your desktop theme
+- **Aa 8 text styles:**
+  - chunky **dot matrix** and flowing **wave** letters
+  - glowing hollow **outline** and a retro **typewriter**
+  - drifting **scatter** and beat-lit **blocks**
+  - glittering **sparkle** and **explode**, where every pixel twinkles and words burst into sparks after they're sung
+
+![Colour moods and text styles](docs/moods.png)
+
+**Beat detection:** the title swells, hops and flashes in time with the kick drum, and waves of light roll through the letters on every beat. All of this is only in full screen; the everyday bar stays calm.
+
+**🔊 Volume over the visuals:** the speaker button opens a big volume bar while the light show keeps playing behind it.
+
+![Volume](docs/volume.png)
+
+**No lyrics for a song?** "No lyrics available" sweeps past in sparkling blocks, then the title returns.
+
+![No lyrics](docs/nolyrics.png)
+
+**Seek by dragging** the progress line, which is in fm.video's pink → magenta → purple in the Music mood and follows the mood's colours otherwise.
+
+It's cheap to run: every effect draws in about 1–3 ms a frame, capped at 30 fps and only while something moves.
+
+## 🎛️ The rest of the Touch Bar
 
 ![Main layer](docs/main.png)
 
-## What you get
-
-- **Control strip:** esc · fn · apps · screenshot · weather · equaliser toggle · now playing · ⏮ ⏯ ⏭ · screen brightness · keyboard light · volume · mute.
-- **Real sliders** for brightness, keyboard backlight and volume. Tap one and it opens full width, or press and slide straight away as on a Mac. A hairline under each button shows the current level.
+- **Control strip:** fn · apps · screenshot · weather · equaliser toggle · now playing · ⏮ ⏯ ⏭ · screen brightness · keyboard light · Touch Bar light · volume · mute. An on-bar Esc appears only on MacBooks without a physical Esc key.
+- **Real sliders** for screen brightness, keyboard backlight, the Touch Bar's own backlight, and volume. Tap one and it opens full width, or press and slide straight away as on a Mac.
 
   ![Slider](docs/slider.png)
 
-- **F-keys:** tap **fn** on the bar to switch, or hold the physical fn key.
+- **F-keys:** tap **fn** on the bar, or hold the physical fn key.
 
   ![Function keys](docs/function.png)
 
-- **Touch ID prompt:** when `sudo`, polkit, a password manager or the lock screen asks fprintd for a finger, the right end shows a pulsing fingerprint with chevrons running towards the sensor. It turns green on a match, shakes on a retry and goes red on a failure.
+- **Touch ID prompt:** when `sudo`, polkit, a password manager or the lock screen asks for your fingerprint, a pulsing fingerprint points at the sensor. It goes green on a match and red on a miss, or shows "Use password" when Touch ID is locked out.
 
   ![Touch ID](docs/touchid.png)
 
-- **Music:** a live equaliser ([cava](https://github.com/karlstav/cava)) or the album cover behind the track title, with a button to switch the equaliser off. Tap the title for a full-width equaliser (seven styles: mirrored bars, peaks, dots, rainbow ripples, aurora waves, an LED pixel matrix and a smoky rainbow comet) with a drag-to-seek scrubber, via MPRIS, so it works with any player.
-
-  ![Equaliser](docs/equaliser.png)
-
-- **Karaoke:** the 🎤 button (in full-screen mode, or the `karaoke` preset) swaps the title for time-synced lyrics from [LRCLIB](https://lrclib.net), the free source fm.video uses. The current line fills in as it's sung and the strip scrolls across with the song. It works with any player (Spotify, YouTube, fm.video) and follows seeks.
-
-- **Lyrics sync adjuster:** tap the track time in full-screen mode (a speedometer marks it when there are lyrics) to nudge the lyrics ±0.1 s while they play beside the controls. The correction is remembered per track. **Share** (only when you tap it) publishes the corrected timing back to LRCLIB, so the fix reaches everyone who uses it, fm.video included.
-
-- **Weather:** conditions icon (sun, moon, cloud, fog, drizzle, rain, sleet, snow, hail, thunderstorm, high wind), temperature, and a wind arrow with the speed in km/h, knots, mph or m/s. Tap it for feels-like, today's range and the next 12 hours. Data comes from [Open-Meteo](https://open-meteo.com) (no key needed). Units follow the location's country unless you set them.
+- **Weather:** a conditions icon (sun, moon, cloud, fog, rain, sleet, snow, hail, thunderstorm, high wind), the temperature, and a wind arrow in km/h, knots, mph or m/s. Tap it for the next 12 hours. Data comes from [Open-Meteo](https://open-meteo.com), no key needed.
 
   ![Weather](docs/weather.png)
 
-- **Theme colours:** read from the current Omarchy theme, updated live when the theme changes. Elsewhere it uses a Tokyo Night palette, and you can override any colour.
-- **Workspaces strip, per-app layers** (switch layout by focused window) and a **clock and battery**, all optional.
+- **Theme colours** follow your Omarchy theme live.
+- **Optional extras:** a workspaces strip, per-app layers, a clock, battery, and your own buttons for any command or key chord.
 - **Plugins:** anything that can print JSON can draw on the bar (see below).
-- **Power:** follows the screen brightness, dims after 30 s, turns off after 60 s and on lid close. A touch wakes it without triggering anything.
+- **Power:** it follows the screen brightness, dims after 30 s, turns off after 60 s and on lid close, and a touch wakes it.
 
 ## Compatibility
 
