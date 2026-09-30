@@ -286,6 +286,8 @@ class Plugin:
         self.buf = bytearray()
         self.pending = None
         self.size = None
+        self.unwanted_since = None
+        self.background = bool(meta.get("background"))
         exe = folder / meta.get("exec", "plugin.py")
         self.proc = subprocess.Popen([str(exe)], cwd=folder, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      start_new_session=True)
@@ -357,16 +359,25 @@ class Plugin:
         return True
 
     def stop(self):
-        GLib.source_remove(self.watch) if self.alive() else None
+        if self.alive():
+            GLib.source_remove(self.watch)
         try:
             self.proc.stdin.close()
         except OSError:
             pass
         proc = self.proc
 
+        def signal_group(sig):
+            # The plugin runs in its own session, so its children (cava, ffmpeg,
+            # ...) share its process group: signal them all, never leak one.
+            try:
+                os.killpg(proc.pid, sig)
+            except (ProcessLookupError, PermissionError):
+                pass
+
         def reap():
-            if proc.poll() is None:
-                proc.terminate()
+            signal_group(signal.SIGTERM)
+            GLib.timeout_add(1500, lambda: (signal_group(signal.SIGKILL), proc.poll(), False)[2])
             return False
         GLib.timeout_add(800, reap)
 
@@ -650,7 +661,7 @@ class Agent:
         self.start_hyprland_watch()
         self.poll_sysfs()
         GLib.timeout_add_seconds(3, self.media_tick)
-        self.weather_where, self.weather_ok_at = None, 0.0
+        self.weather_where, self.weather_ok_at, self.weather_retry = None, 0.0, None
         self.weather_tick()
         GLib.timeout_add_seconds(15 * 60, self.weather_tick)
 
@@ -806,8 +817,21 @@ class Agent:
                 wanted = self.state.get("eq", True) or self.state.get("viz")
                 if meta.get("background") == "playing" and spectrum and wanted and self.state.get("playing"):
                     want.setdefault(name, None)
-        for pid in list(self.plugins):
-            if pid not in want or not self.plugins[pid].alive():
+        import time
+        now = time.monotonic()
+        for pid, p in list(self.plugins.items()):
+            if not p.alive():
+                self.plugins.pop(pid).stop()
+            elif pid in want:
+                p.unwanted_since = None
+            elif not p.background:
+                self.plugins.pop(pid).stop()  # a surface that's no longer shown
+            elif p.unwanted_since is None:
+                # Background plugins get a grace period, so quick play/pause
+                # toggles don't restart them over and over.
+                p.unwanted_since = now
+                GLib.timeout_add_seconds(11, lambda: (self.sync_plugins(), False)[1])
+            elif now - p.unwanted_since >= 10:
                 self.plugins.pop(pid).stop()
         for pid, spec in want.items():
             p = self.plugins.get(pid)
@@ -973,12 +997,6 @@ class Agent:
 
     def read_volume(self):
         self.vol_timer = None
-        self.plugins = {}
-        self.surfaces = {}
-        self.power_on = True
-        self.media = {}
-        self.art_url = None
-        self.state["eq"] = load_prefs().get("eq", True)
         changes = {}
         for target, vk, mk in (("@DEFAULT_AUDIO_SINK@", "volume", "muted"),
                                ("@DEFAULT_AUDIO_SOURCE@", None, "mic_muted")):
@@ -1144,7 +1162,14 @@ class Agent:
                 log(f"weather: {e}")
                 stale = time.time() - self.weather_ok_at > 3600
                 state = {"weather_stale": stale}
-                GLib.timeout_add_seconds(120, lambda: (self.weather_tick(), False)[1])
+                # One retry at a time, however many failures (or ticks) pile up.
+                if not self.weather_retry:
+                    def retry():
+                        self.weather_retry = None
+                        self.weather_tick()
+                        return False
+                    GLib.idle_add(lambda: (setattr(self, "weather_retry",
+                                                   self.weather_retry or GLib.timeout_add_seconds(120, retry)), False)[1])
             GLib.idle_add(lambda: (self.push_state(**state), False)[1])
 
         threading.Thread(target=work, daemon=True).start()

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Touch Bar plugin: stream cava's spectrum as {"t":"bars"} messages."""
-import json, os, subprocess, sys, tempfile, threading
+import ctypes, json, os, signal, subprocess, sys, tempfile, threading
 
 BARS = 96
 CONFIG = f"""
@@ -28,7 +28,13 @@ monstercat = 0
 def main():
     with tempfile.NamedTemporaryFile("w", suffix=".cava", delete=False) as f:
         f.write(CONFIG)
-    proc = subprocess.Popen(["cava", "-p", f.name], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    def die_with_parent():
+        # PR_SET_PDEATHSIG: if this plugin dies, cava goes with it.
+        ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGTERM)
+
+    proc = subprocess.Popen(["cava", "-p", f.name], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                            preexec_fn=die_with_parent)
+    signal.signal(signal.SIGTERM, lambda *_: (proc.terminate(), sys.exit(0)))
     # The agent closing our stdin means stop.
     threading.Thread(target=lambda: (sys.stdin.read(), proc.terminate()), daemon=True).start()
     out = sys.stdout.buffer

@@ -453,6 +453,8 @@ impl Model {
             self.weather = None;
             changed = true;
         }
+        // Frames from plugins that stopped drawing (hidden, or gone) are dropped.
+        self.surfaces.retain(|_, (_, t)| now - *t < PIXELS_STALE * 4);
         let before = self.pressed.len();
         self.pressed.retain(|_, (down, t)| *down || now - *t < PRESS_FADE);
         changed |= before != self.pressed.len();

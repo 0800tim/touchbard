@@ -181,6 +181,10 @@ fn run() -> Result<()> {
     let mut frame = cairo::ImageSurface::create(cairo::Format::ARgb32, w as i32, h as i32)?;
     let mut clients: Vec<Client> = vec![];
     let mut dirty = true;
+    // Frames are capped at ~30 fps: spectrum messages and animation ticks
+    // arrive independently and would otherwise each trigger a redraw.
+    const FRAME: Duration = Duration::from_millis(33);
+    let mut last_frame = Instant::now() - FRAME;
     // What we last told the agent: the plugin surfaces on screen, and whether the bar is lit.
     let mut last_specs: Option<Vec<SurfaceSpec>> = None;
     let mut was_off: Option<bool> = None;
@@ -231,7 +235,10 @@ fn run() -> Result<()> {
             last_specs = Some(specs);
         }
 
-        if dirty || model.animating(now) {
+        let frame_wanted = dirty || model.animating(now);
+        let frame_due = last_frame + FRAME;
+        if frame_wanted && now >= frame_due {
+            last_frame = now;
             {
                 let c = cairo::Context::new(&frame)?;
                 render::draw(&model, &c, now);
@@ -245,6 +252,9 @@ fn run() -> Result<()> {
 
         // Sleep until something happens or something is due.
         let mut deadline = model.next_deadline(now).unwrap_or(now + Duration::from_secs(5));
+        if dirty {
+            deadline = deadline.min(frame_due.max(now));
+        }
         let secs_left = 60 - chrono::Timelike::second(&chrono::Local::now()) as u64;
         deadline = deadline.min(now + Duration::from_secs(secs_left.max(1)));
         if !backlight.is_off() {
@@ -561,6 +571,16 @@ fn preview(args: &[String]) -> Result<()> {
         }
     }
     let surf = cairo::ImageSurface::create(cairo::Format::ARgb32, w, h)?;
+    if let Ok(n) = std::env::var("TOUCHBARD_BENCH").map(|v| v.parse::<u32>().unwrap_or(300)) {
+        // Frame cost for performance work: TOUCHBARD_BENCH=300 touchbard --preview ...
+        let t = Instant::now();
+        for _ in 0..n {
+            let c = cairo::Context::new(&surf)?;
+            render::draw(&model, &c, Instant::now());
+        }
+        let per = t.elapsed().as_secs_f64() * 1000.0 / n as f64;
+        eprintln!("{n} frames: {per:.2} ms/frame ({:.1}% of one core at 30 fps)", per * 30.0 / 10.0);
+    }
     {
         let c = cairo::Context::new(&surf)?;
         render::draw(&model, &c, Instant::now() + Duration::from_secs_f64(age));
