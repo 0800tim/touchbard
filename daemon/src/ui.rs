@@ -115,6 +115,10 @@ pub struct Model {
     pub art: Option<cairo::ImageSurface>,
     pub surfaces: HashMap<String, (cairo::ImageSurface, Instant)>,
     pub position_at: Instant,
+    /// When the track title last changed: the marquee starts from its head.
+    pub title_since: Instant,
+    /// Set by the renderer while a long title is scrolling, so frames keep coming.
+    pub marquee: std::cell::Cell<bool>,
     grabs: HashMap<u32, Grab>,
     hold: HashMap<String, Instant>,
 }
@@ -150,6 +154,8 @@ impl Model {
             art: None,
             surfaces: HashMap::new(),
             position_at: now,
+            title_since: now,
+            marquee: std::cell::Cell::new(false),
             grabs: HashMap::new(),
             hold: HashMap::new(),
         }
@@ -221,6 +227,9 @@ impl Model {
             }
             if k == "position" {
                 self.position_at = now;
+            }
+            if k == "title" && self.state.get("title") != Some(&v) {
+                self.title_since = now;
             }
             self.state.insert(k, v);
         }
@@ -469,6 +478,7 @@ impl Model {
             || self.pressed.values().any(|(down, _)| !*down)
             || (self.bars_live(now) && self.shows_spectrum())
             || (self.viz.is_some() && self.flag("playing"))
+            || self.marquee.get()
             || self.surfaces.values().any(|(_, t)| now - *t < PIXELS_STALE)
     }
 

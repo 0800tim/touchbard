@@ -319,7 +319,11 @@ fn draw_item(m: &Model, p: &Painter, pal: &Palette, it: &Item, n: usize, x: f64,
             let art = if bg_mode == "art" { m.art.as_ref() } else { None };
             let side = m.h - 2.0 * MARGIN_Y - 6.0;
             let nw = if art.is_some() { side } else { p.text_width(note, 30.0, false) };
-            let tw = p.text_width(&text, LABEL_PX, false).min(w - nw - 30.0);
+            let full = p.text_width(&text, LABEL_PX, false);
+            let avail = (w - nw - 30.0).max(20.0);
+            let scrolling = full > avail;
+            m.marquee.set(scrolling && m.flag("playing"));
+            let tw = full.min(avail);
             let start = x + (w - nw - 10.0 - tw) / 2.0;
             if let Some(img) = art {
                 c.save().unwrap();
@@ -335,8 +339,13 @@ fn draw_item(m: &Model, p: &Painter, pal: &Palette, it: &Item, n: usize, x: f64,
                 pal.accent.set(c);
                 p.text(note, 30.0, false, start + nw / 2.0, cy, None);
             }
-            pal.fg.set(c);
-            p.text(&text, LABEL_PX, false, start + nw + 10.0 + tw / 2.0, cy, Some(tw + 1.0));
+            let tx = start + nw + 10.0;
+            if scrolling {
+                draw_marquee(m, p, pal, &text, full, tx, avail, now);
+            } else {
+                pal.fg.set(c);
+                p.text(&text, LABEL_PX, false, tx + tw / 2.0, cy, Some(tw + 1.0));
+            }
         }
         Kind::Workspaces => {
             let (list, active) = m.workspaces();
@@ -923,5 +932,102 @@ fn draw_weather(m: &Model, p: &Painter, pal: &Palette, now: Instant) {
             }
             _ => {}
         }
+    }
+}
+
+fn hsv(h: f64, s: f64, v: f64) -> Rgb {
+    let i = (h * 6.0).floor();
+    let f = h * 6.0 - i;
+    let (p, q, t) = (v * (1.0 - s), v * (1.0 - f * s), v * (1.0 - (1.0 - f) * s));
+    match i as i64 % 6 {
+        0 => Rgb(v, t, p),
+        1 => Rgb(q, v, p),
+        2 => Rgb(p, v, t),
+        3 => Rgb(p, q, v),
+        4 => Rgb(t, p, v),
+        _ => Rgb(v, p, q),
+    }
+}
+
+const MARQUEE_SPEED: f64 = 38.0; // px per second
+const MARQUEE_REST: f64 = 1.5; // seconds to read the start before it moves
+const COMET_W: f64 = 180.0;
+
+/// A long title glides left and loops, trailed by a rainbow spectrum comet.
+#[allow(clippy::too_many_arguments)]
+fn draw_marquee(m: &Model, p: &Painter, pal: &Palette, text: &str, full: f64, tx: f64, avail: f64, now: Instant) {
+    let c = p.c;
+    let cy = m.h / 2.0;
+    let t = (now - m.title_since).as_secs_f64();
+    let moving = if m.flag("playing") { (t - MARQUEE_REST).max(0.0) } else { 0.0 };
+    let (gap_a, gap_b) = (16.0, 48.0);
+    let cycle = full + gap_a + COMET_W + gap_b;
+    let off = (moving * MARQUEE_SPEED) % cycle;
+
+    c.save().unwrap();
+    c.rectangle(tx, MARGIN_Y, avail, m.h - 2.0 * MARGIN_Y);
+    c.clip();
+    for k in 0..2 {
+        let bx = tx - off + k as f64 * cycle;
+        if bx > tx + avail || bx + cycle < tx {
+            continue;
+        }
+        pal.fg.set(c);
+        p.text(text, LABEL_PX, false, bx + full / 2.0, cy, None);
+        draw_comet(m, c, bx + full + gap_a, cy, t);
+    }
+    c.restore().unwrap();
+
+    // Soft edges instead of a hard cut; the left one only once it has moved.
+    let fade = 26.0;
+    let edge = |x0: f64, x1: f64| {
+        let g = LinearGradient::new(x0, 0.0, x1, 0.0);
+        g.add_color_stop_rgba(0.0, pal.bg.0, pal.bg.1, pal.bg.2, 0.95);
+        g.add_color_stop_rgba(1.0, pal.bg.0, pal.bg.1, pal.bg.2, 0.0);
+        c.set_source(&g).unwrap();
+        c.rectangle(x0.min(x1), MARGIN_Y, fade, m.h - 2.0 * MARGIN_Y);
+        c.fill().unwrap();
+    };
+    if off > 0.0 {
+        edge(tx, tx + fade);
+    }
+    edge(tx + avail, tx + avail - fade);
+}
+
+/// Rainbow bars fading into drifting coloured smoke. `x0` is the comet's head.
+fn draw_comet(m: &Model, c: &Context, x0: f64, cy: f64, t: f64) {
+    let h = m.h - 2.0 * MARGIN_Y - 8.0;
+    // Smoke first, so the bars sit on top of it.
+    for j in 0..8 {
+        let fj = j as f64 / 7.0;
+        let px = x0 + COMET_W * (0.12 + 0.88 * fj) + (t * 1.3 + j as f64 * 1.7).sin() * 7.0;
+        let py = cy + (t * 0.9 + j as f64 * 2.3).sin() * 8.0 * fj;
+        let r = 10.0 + 24.0 * fj;
+        let col = hsv((fj * 0.7 + t * 0.07 + 0.55).fract(), 0.7, 1.0);
+        let g = cairo::RadialGradient::new(px, py, 0.0, px, py, r);
+        g.add_color_stop_rgba(0.0, col.0, col.1, col.2, 0.42 * (1.0 - fj * 0.6));
+        g.add_color_stop_rgba(1.0, col.0, col.1, col.2, 0.0);
+        c.set_source(&g).unwrap();
+        c.arc(px, py, r, 0.0, 2.0 * PI);
+        c.fill().unwrap();
+    }
+    // The spectrum: live when audio is flowing, a gentle idle wave otherwise.
+    let n = 14;
+    let step = COMET_W * 0.62 / n as f64;
+    let live = m.bars_live(Instant::now()) && m.eq_on();
+    for i in 0..n {
+        let frac = i as f64 / n as f64;
+        let level = if live {
+            let k = (i * m.bars.len() / (n * 2)).min(m.bars.len().saturating_sub(1));
+            m.bars.get(k).copied().unwrap_or(0.0) as f64
+        } else {
+            0.35 + 0.3 * (t * 5.0 + i as f64 * 0.7).sin()
+        };
+        let bh = ((0.2 + 0.8 * level.clamp(0.0, 1.0)) * h * (1.0 - frac * 0.5)).max(3.0);
+        let col = hsv((frac * 0.85 + t * 0.12).fract(), 0.78, 1.0);
+        c.set_source_rgba(col.0, col.1, col.2, 0.95 * (1.0 - frac).powf(1.3));
+        let bw = step * 0.72;
+        rounded(c, x0 + i as f64 * step, cy - bh / 2.0, bw, bh, bw / 2.0);
+        c.fill().unwrap();
     }
 }
