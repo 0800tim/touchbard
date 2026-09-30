@@ -296,7 +296,7 @@ fn draw_item(m: &Model, p: &Painter, pal: &Palette, it: &Item, n: usize, x: f64,
                 c.restore().unwrap();
             }
             if let Some((pos, len)) = m.position(now) {
-                progress_bar(c, pal, x + 12.0, m.h - MARGIN_Y - 3.0, w - 24.0, 3.0, pos / len, false);
+                progress_bar(m, c, pal, x + 12.0, m.h - MARGIN_Y - 3.0, w - 24.0, 3.0, pos / len, false);
             }
             if pressed > 0.0 {
                 pal.accent.set_a(c, 0.25 * pressed);
@@ -808,7 +808,7 @@ fn draw_viz(m: &Model, p: &Painter, pal: &Palette, v: &VizOverlay, now: Instant)
                     p.text(&t, 18.0, true, x + w - 18.0 - tw / 2.0, y + 19.0, None);
                     // Progress along the bottom edge; thicker, with a glowing knob, while scrubbing.
                     let th = if v.scrub.is_some() { 7.0 } else { 4.0 };
-                    progress_bar(c, pal, x + 10.0, y + h - th - 3.0, w - 20.0, th, pos / len.max(1.0), v.scrub.is_some());
+                    progress_bar(m, c, pal, x + 10.0, y + h - th - 3.0, w - 20.0, th, pos / len.max(1.0), v.scrub.is_some());
                 }
             }
             _ => {}
@@ -1464,22 +1464,30 @@ const FM_PURPLE: Rgb = Rgb(0.608, 0.302, 1.0);
 /// Track progress in fm.video's pink-to-purple gradient, rounded, with a
 /// glowing knob while it's being dragged.
 #[allow(clippy::too_many_arguments)]
-fn progress_bar(c: &Context, pal: &Palette, x: f64, y: f64, w: f64, th: f64, frac: f64, scrubbing: bool) {
+fn progress_bar(m: &Model, c: &Context, pal: &Palette, x: f64, y: f64, w: f64, th: f64, frac: f64, scrubbing: bool) {
     let frac = frac.clamp(0.0, 1.0);
     pal.bg.set_a(c, 0.55);
     rounded(c, x, y, w, th, th / 2.0);
     c.fill().unwrap();
     // The gradient spans the whole track, so each colour belongs to a place in the song.
+    // fm.video's pink-to-purple with the song's own colours; otherwise the
+    // mood's gradient, so greyscale stays greyscale and matrix stays green.
+    let stops = if m.mood_name() == "music" {
+        [FM_PINK, FM_MAGENTA, FM_PURPLE]
+    } else {
+        [viz_color(m, pal, 0.05, 0.8, 1.0), viz_color(m, pal, 0.4, 0.8, 1.0), viz_color(m, pal, 0.75, 0.8, 1.0)]
+    };
     let g = LinearGradient::new(x, 0.0, x + w, 0.0);
-    for (at, col) in [(0.0, FM_PINK), (0.5, FM_MAGENTA), (1.0, FM_PURPLE)] {
-        g.add_color_stop_rgb(at, col.0, col.1, col.2);
+    let soft = if scrubbing { 1.0 } else { 0.8 };
+    for (at, col) in [(0.0, stops[0]), (0.5, stops[1]), (1.0, stops[2])] {
+        g.add_color_stop_rgba(at, col.0, col.1, col.2, soft);
     }
     c.set_source(&g).unwrap();
     rounded(c, x, y, (w * frac).max(th), th, th / 2.0);
     c.fill().unwrap();
     if scrubbing {
         let (kx, ky) = (x + w * frac, y + th / 2.0);
-        let tip = FM_PINK.mix(FM_PURPLE, frac);
+        let tip = stops[0].mix(stops[2], frac);
         let glow = cairo::RadialGradient::new(kx, ky, 0.0, kx, ky, 16.0);
         glow.add_color_stop_rgba(0.0, tip.0, tip.1, tip.2, 0.55);
         glow.add_color_stop_rgba(1.0, tip.0, tip.1, tip.2, 0.0);
