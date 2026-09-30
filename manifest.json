@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.0800tim.touchbard",
   "name": "Touch Bar",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "author": "Tim Thomas",
   "description": "A themed, macOS-style Touch Bar for Apple Touch Bar MacBooks: sliders, weather, a live equaliser and a Touch ID prompt, in your Omarchy theme",
   "kinds": [

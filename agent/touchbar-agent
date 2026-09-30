@@ -525,6 +525,21 @@ def save_prefs(changes):
     PREFS.write_text(json.dumps(prefs))
 
 
+def daemon_peer_ok(sock):
+    import pwd
+    import struct
+    try:
+        creds = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+        _, uid, _ = struct.unpack("3i", creds)
+    except OSError:
+        return False
+    try:
+        nobody = pwd.getpwnam("nobody").pw_uid
+    except KeyError:
+        nobody = None
+    return uid == 0 or uid == nobody
+
+
 def one_shot(msg):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.connect(SOCKET)
@@ -649,6 +664,12 @@ class Agent:
             s.connect(SOCKET)
             s.setblocking(False)
         except OSError:
+            return False
+        # We run commands the daemon sends us, so make sure it is the daemon:
+        # root (before it drops privileges) or the unprivileged "nobody" it drops to.
+        if not daemon_peer_ok(s):
+            log("refusing to talk to a socket that isn't owned by touchbard")
+            s.close()
             return False
         self.sock = s
         self.rbuf = b""

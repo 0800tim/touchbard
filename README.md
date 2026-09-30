@@ -73,7 +73,7 @@ systemctl --user daemon-reload && systemctl --user enable --now touchbar-agent
 
 Omarchy users can repaint instantly on theme changes with `omarchy hook install theme-set system/hooks/touchbar-reload`. The agent also notices by itself within a couple of seconds.
 
-To uninstall: `sudo system/uninstall.sh` (puts tiny-dfr back), then `systemctl --user disable --now touchbar-agent`.
+To uninstall: `sudo system/uninstall.sh` (puts tiny-dfr back; it removes only files recorded in the install manifest whose checksums still match), then `systemctl --user disable --now touchbar-agent`.
 
 ## Configure
 
@@ -110,7 +110,7 @@ items = [
 | `touchbard` (Rust) | system service, from boot | owns the Touch Bar's DRM panel and digitiser; draws with cairo/pango; sends keys through a uinput device; manages the backlight. Drops to `nobody` (groups `input`, `video`) after opening its devices. |
 | `touchbar-agent` (Python) | systemd user service | reads the theme and config; tracks volume, brightness, MPRIS, Hyprland and fprintd; runs button commands; hosts plugins |
 
-They talk over `/run/touchbard/touchbard.sock`, one JSON object per line. Until an agent connects (for example at the login screen), the daemon shows a key-only fallback layout.
+They talk over `/run/touchbard/touchbard.sock`, one JSON object per line. Layouts can carry commands that run in your session, so the daemon only talks to the user who owns the active session on seat0 (from logind; checked by peer credentials on connect and before every message), and the agent only acts on a socket whose peer is root or the daemon's unprivileged `nobody`. Until an agent connects (for example at the login screen), the daemon shows a key-only fallback layout.
 
 Notes for anyone hacking on the display path:
 - Apple's `adp` display engine reads rows padded to 64 bytes. A 60 px wide dumb buffer gets a 240-byte pitch from the kernel and shows a sheared image, so allocate 64 px wide.

@@ -51,6 +51,8 @@ impl LibinputInterface for Interface {
 
 struct Client {
     stream: UnixStream,
+    /// Peer UID from SO_PEERCRED, taken when the connection was accepted.
+    uid: u32,
     buf: Vec<u8>,
     is_agent: bool,
     /// A frame header waiting for its payload: (plugin id, width, height, bytes).
@@ -121,23 +123,43 @@ fn listen() -> Result<UnixListener> {
     }
     let _ = fs::remove_file(&path);
     let l = UnixListener::bind(&path).with_context(|| format!("bind {path}"))?;
-    // Anyone may connect; `accept` checks who they are.
+    // Any local user can reach the socket, but only the owner of the active
+    // desktop session (or root) gets past `authorized`: see there.
     fs::set_permissions(&path, fs::Permissions::from_mode(0o666))?;
     l.set_nonblocking(true)?;
     Ok(l)
 }
 
-fn peer_allowed(s: &UnixStream) -> bool {
+fn peer_uid(s: &UnixStream) -> Option<u32> {
     use nix::sys::socket::{getsockopt, sockopt::PeerCredentials};
-    getsockopt(s, PeerCredentials).is_ok_and(|c| c.uid() == 0 || c.uid() >= 1000)
+    getsockopt(s, PeerCredentials).ok().map(|c| c.uid())
 }
 
+/// The user who owns the active session on seat0, per logind. Layouts carry
+/// commands that the agent runs in that user's session, so nobody else may
+/// talk to us. Re-read on every check: it changes when users switch.
+fn active_uid() -> Option<u32> {
+    let seat = fs::read_to_string("/run/systemd/seats/seat0").ok()?;
+    seat.lines().find_map(|l| l.strip_prefix("ACTIVE_UID=")?.trim().parse().ok())
+}
+
+fn authorized(uid: u32) -> bool {
+    uid == 0 || active_uid() == Some(uid)
+}
+
+/// Send to every authorized client, dropping any that aren't (a user who
+/// switched away) or whose connection broke.
 fn send_all(clients: &mut Vec<Client>, msg: &Outgoing) {
     let mut line = serde_json::to_vec(msg).unwrap_or_default();
     line.push(b'\n');
-    clients.retain_mut(|c| match c.stream.write_all(&line) {
-        Ok(()) => true,
-        Err(e) => e.kind() == ErrorKind::WouldBlock,
+    clients.retain_mut(|c| {
+        if !authorized(c.uid) {
+            return false;
+        }
+        match c.stream.write_all(&line) {
+            Ok(()) => true,
+            Err(e) => e.kind() == ErrorKind::WouldBlock,
+        }
     });
 }
 
@@ -357,12 +379,17 @@ fn run() -> Result<()> {
         loop {
             match listener.accept() {
                 Ok((stream, _)) => {
-                    if peer_allowed(&stream) && stream.set_nonblocking(true).is_ok() {
-                        let mut hello = serde_json::to_vec(&Outgoing::Hello).unwrap_or_default();
-                        hello.push(b'\n');
-                        let mut stream = stream;
-                        let _ = stream.write_all(&hello);
-                        clients.push(Client { stream, buf: vec![], is_agent: false, pending: None });
+                    let uid = peer_uid(&stream);
+                    match uid {
+                        Some(uid) if authorized(uid) && stream.set_nonblocking(true).is_ok() => {
+                            let mut hello = serde_json::to_vec(&Outgoing::Hello).unwrap_or_default();
+                            hello.push(b'\n');
+                            let mut stream = stream;
+                            let _ = stream.write_all(&hello);
+                            clients.push(Client { stream, uid, buf: vec![], is_agent: false, pending: None });
+                        }
+                        // Dropping the stream closes it: not the session owner.
+                        _ => eprintln!("touchbard: refused connection from uid {uid:?}"),
                     }
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => break,
@@ -372,6 +399,12 @@ fn run() -> Result<()> {
         let mut agent_gone = false;
         let mut i = 0;
         while i < clients.len() {
+            // Checked before reading, so nothing from a non-owner is ever parsed.
+            if !authorized(clients[i].uid) {
+                agent_gone |= clients[i].is_agent;
+                clients.remove(i);
+                continue;
+            }
             let mut closed = false;
             let mut chunk = [0u8; 16384];
             loop {
