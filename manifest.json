@@ -2,9 +2,10 @@
   "schemaVersion": 1,
   "id": "io.github.0800tim.touchbard",
   "name": "Touch Bar",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "author": "Tim Thomas",
-  "description": "A themed, macOS-style Touch Bar for Apple Touch Bar MacBooks: sliders, weather, a live equaliser and a Touch ID prompt, in your Omarchy theme",
+  "license": "MIT",
+  "description": "Karaoke lyrics, a live music visualiser and a full macOS-style Touch Bar for Apple Touch Bar MacBooks running Linux. Time-synced lyrics from LRCLIB for Spotify, YouTube Music, YouTube and any MPRIS player; a real-audio equaliser/equalizer spectrum visualizer coloured from the artwork; volume and brightness sliders, media controls, weather, function keys (F1-F12) and a Touch ID fingerprint prompt. Themed to Omarchy and Hyprland. Also known as touchbard. Intel T2 and Apple Silicon MacBook Pro.",
   "kinds": [
     "bar-widget"
   ],
