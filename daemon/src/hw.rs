@@ -196,8 +196,13 @@ impl Backlight {
         }
     }
 
+    /// `v` is on a 0..=255 scale. Scale it to the device's range rather than clamping:
+    /// Apple Silicon Touch Bars take 0..=255, but Intel T2 ones (`appletb_backlight`)
+    /// only 0..=2 (off, dim, full). Round up so any non-zero level stays visible and
+    /// the dimmed state (a quarter of full) still differs from full.
     pub fn set(&mut self, v: u32) {
-        let v = v.min(self.tb_max);
+        let v = v.min(255);
+        let v = (v * self.tb_max).div_ceil(255);
         if self.current == Some(v) {
             return;
         }
