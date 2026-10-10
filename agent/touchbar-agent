@@ -1389,7 +1389,7 @@ class Agent:
         elif k == "brightness":
             command = f"brightnessctl -q -d {shlex.quote(self.display_bl or 'apple-panel-bl')} set {max(pct, 1)}%"
         elif k == "keyboard":
-            command = f"brightnessctl -q -d kbd_backlight set {pct}%"
+            command = f"brightnessctl -q -d {shlex.quote(self.kbd_bl or 'kbd_backlight')} set {pct}%"
         else:
             self.apply_next_set()
             return
@@ -1401,8 +1401,15 @@ class Agent:
     # ---- screen and keyboard brightness ------------------------------------
 
     display_bl = None
+    kbd_bl = None
 
     def poll_sysfs(self):
+        if self.kbd_bl is None:
+            # Apple silicon: kbd_backlight; Intel T2 (apple-bce/t2bce): apple::kbd_backlight
+            for name in ("kbd_backlight", "apple::kbd_backlight"):
+                if Path(f"/sys/class/leds/{name}").exists():
+                    self.kbd_bl = name
+                    break
         if self.display_bl is None:
             for name in ("apple-panel-bl", "intel_backlight", "gmux_backlight", "acpi_video0"):
                 if Path(f"/sys/class/backlight/{name}").exists():
@@ -1410,7 +1417,7 @@ class Agent:
                     break
         changes = {}
         for key_, base in (("brightness", f"/sys/class/backlight/{self.display_bl}"),
-                           ("keyboard", "/sys/class/leds/kbd_backlight")):
+                           ("keyboard", f"/sys/class/leds/{self.kbd_bl or 'kbd_backlight'}")):
             if key_ in self.pending_set:
                 continue
             try:

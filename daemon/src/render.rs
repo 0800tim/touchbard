@@ -179,7 +179,13 @@ fn battery() -> Option<(f64, bool)> {
         if fs::read_to_string(p.join("type")).ok()?.trim() != "Battery" {
             continue;
         }
-        let cap = fs::read_to_string(p.join("capacity")).ok()?.trim().parse::<f64>().ok()?;
+        // Prefer now ÷ full: some gauges (ACPI SBS on Intel T2 Macs) report `capacity` against the
+        // design capacity, so a worn battery never reads more than its health (85 % when full).
+        let num = |f: &str| fs::read_to_string(p.join(f)).ok()?.trim().parse::<f64>().ok();
+        let cap = match (num("charge_now").or(num("energy_now")), num("charge_full").or(num("energy_full"))) {
+            (Some(now), Some(full)) if full > 0.0 => (now / full * 100.0).min(100.0),
+            _ => num("capacity")?,
+        };
         let status = fs::read_to_string(p.join("status")).unwrap_or_default();
         let charging = matches!(status.trim(), "Charging" | "Full");
         return Some((cap, charging));
